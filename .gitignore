@@ -1,0 +1,9 @@
+node_modules/
+worker/node_modules/
+worker/.wrangler/
+dist/
+*.zip
+.DS_Store
+.env*
+.omc/
+node_modules

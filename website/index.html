@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>prompt.ai — AI Prompt Optimizer</title>
+  <meta name="description" content="Turn rough ideas into professional AI prompts in one click. Auto-fill into ChatGPT, Claude, Kimi and 15+ AI platforms." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ink: #18181b;
+      --ink-2: #52525b;
+      --ink-3: #a1a1aa;
+      --surface: #fafafa;
+      --white: #ffffff;
+      --border: #e4e4e7;
+      --violet: #7c3aed;
+      --violet-light: #ede9fe;
+      --radius: 10px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--white);
+      color: var(--ink);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* NAV */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 48px;
+      background: rgba(255,255,255,0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      text-decoration: none;
+    }
+    .nav-logo span { color: var(--violet); }
+    .nav-cta {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--ink); color: #fff;
+      padding: 9px 20px; border-radius: 8px;
+      font-size: 0.875rem; font-weight: 500;
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    .nav-cta:hover { opacity: 0.85; }
+
+    /* HERO */
+    .hero {
+      padding: 160px 48px 96px;
+      max-width: 1100px; margin: 0 auto;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--violet-light); color: var(--violet);
+      padding: 4px 12px; border-radius: 100px;
+      font-size: 0.8rem; font-weight: 500;
+      margin-bottom: 24px;
+    }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--violet); }
+    h1 {
+      font-family: 'Instrument Serif', serif;
+      font-size: clamp(2.5rem, 4vw, 3.5rem);
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+      color: var(--ink);
+      margin-bottom: 20px;
+    }
+    h1 em { font-style: italic; color: var(--violet); }
+    .hero-sub {
+      font-size: 1.05rem; color: var(--ink-2);
+      line-height: 1.7; margin-bottom: 36px;
+    }
+    .hero-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--ink); color: #fff;
+      padding: 12px 24px; border-radius: 9px;
+      font-size: 0.9375rem; font-weight: 500;
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: transparent; color: var(--ink-2);
+      padding: 12px 20px; border-radius: 9px;
+      font-size: 0.9375rem;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .btn-secondary:hover { border-color: var(--ink-3); color: var(--ink); }
+    .hero-note {
+      margin-top: 16px;
+      font-size: 0.8rem; color: var(--ink-3);
+    }
+
+    /* MOCK UI */
+    .hero-visual {
+      position: relative;
+    }
+    .mock-card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.08);
+    }
+    .mock-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .mock-logo { font-family: 'Instrument Serif', serif; font-size: 1rem; }
+    .mock-version {
+      font-size: 0.7rem; background: var(--surface);
+      padding: 3px 8px; border-radius: 6px; color: var(--ink-3);
+    }
+    .mock-tabs {
+      display: flex; gap: 4px; margin-bottom: 16px;
+    }
+    .mock-tab {
+      padding: 5px 12px; border-radius: 7px; font-size: 0.8rem; cursor: default;
+      color: var(--ink-3);
+    }
+    .mock-tab.active { background: var(--ink); color: white; }
+    .mock-label { font-size: 0.75rem; color: var(--ink-3); margin-bottom: 6px; }
+    .mock-select {
+      display: flex; align-items: center; justify-content: space-between;
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 12px; margin-bottom: 12px; font-size: 0.85rem;
+    }
+    .mock-tones { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .mock-tone {
+      padding: 4px 10px; border-radius: 6px; font-size: 0.75rem;
+      border: 1px solid var(--border); cursor: default; color: var(--ink-2);
+    }
+    .mock-tone.active { background: var(--ink); color: white; border-color: var(--ink); }
+    .mock-input {
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; font-size: 0.82rem; color: var(--ink-2);
+      margin-bottom: 12px; line-height: 1.5;
+      min-height: 64px;
+    }
+    .mock-recommend {
+      background: var(--surface); border-radius: 8px; padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+    .mock-recommend-title { font-size: 0.75rem; color: var(--ink-2); margin-bottom: 8px; }
+    .mock-model {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .mock-model:last-child { margin-bottom: 0; }
+    .mock-model-info { display: flex; align-items: center; gap: 8px; }
+    .mock-model-num {
+      width: 20px; height: 20px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem; font-weight: 600; color: white;
+    }
+    .num-1 { background: var(--violet); }
+    .num-2 { background: var(--ink); }
+    .mock-model-name { font-size: 0.8rem; font-weight: 500; }
+    .mock-model-tag {
+      font-size: 0.65rem; padding: 2px 6px; border-radius: 4px;
+      background: var(--violet-light); color: var(--violet);
+    }
+    .mock-model-tag.perf { background: #fef9c3; color: #854d0e; }
+    .mock-go { font-size: 0.75rem; color: var(--violet); }
+    .mock-btn {
+      width: 100%; background: var(--ink); color: white;
+      border-radius: 8px; padding: 10px; text-align: center;
+      font-size: 0.85rem; font-weight: 500;
+    }
+
+    /* SUPPORTED */
+    .supported {
+      padding: 48px 48px;
+      max-width: 1100px; margin: 0 auto;
+      border-top: 1px solid var(--border);
+    }
+    .supported-label {
+      font-size: 0.8rem; color: var(--ink-3); margin-bottom: 16px; text-align: center;
+    }
+    .supported-logos {
+      display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;
+    }
+    .logo-pill {
+      padding: 6px 16px; border: 1px solid var(--border); border-radius: 100px;
+      font-size: 0.8rem; color: var(--ink-2);
+    }
+
+    /* FEATURES */
+    .features {
+      padding: 96px 48px;
+      max-width: 1100px; margin: 0 auto;
+    }
+    .section-label {
+      font-size: 0.8rem; color: var(--violet); font-weight: 500;
+      letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 12px;
+    }
+    .section-title {
+      font-family: 'Instrument Serif', serif;
+      font-size: clamp(1.8rem, 3vw, 2.5rem);
+      line-height: 1.2; letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+    .section-sub { font-size: 1rem; color: var(--ink-2); max-width: 480px; margin-bottom: 64px; }
+    .features-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;
+      background: var(--border); border-radius: 16px; overflow: hidden;
+    }
+    .feature-card {
+      background: var(--white); padding: 36px 32px;
+    }
+    .feature-icon {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: var(--surface); display: flex; align-items: center; justify-content: center;
+      font-size: 1.2rem; margin-bottom: 20px;
+    }
+    .feature-title { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+    .feature-desc { font-size: 0.875rem; color: var(--ink-2); line-height: 1.6; }
+
+    /* HOW IT WORKS */
+    .how {
+      padding: 96px 48px;
+      background: var(--surface);
+    }
+    .how-inner { max-width: 1100px; margin: 0 auto; }
+    .steps {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px;
+      margin-top: 64px;
+    }
+    .step-num {
+      font-family: 'Instrument Serif', serif; font-size: 3rem; color: var(--border);
+      line-height: 1; margin-bottom: 16px;
+    }
+    .step-title { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+    .step-desc { font-size: 0.875rem; color: var(--ink-2); line-height: 1.6; }
+
+    /* CTA */
+    .cta-section {
+      padding: 96px 48px;
+      max-width: 1100px; margin: 0 auto;
+      text-align: center;
+    }
+    .cta-box {
+      background: var(--ink); border-radius: 20px;
+      padding: 72px 48px;
+      color: white;
+    }
+    .cta-box h2 {
+      font-family: 'Instrument Serif', serif;
+      font-size: clamp(1.8rem, 3vw, 2.5rem);
+      line-height: 1.2; margin-bottom: 16px; letter-spacing: -0.02em;
+    }
+    .cta-box p { color: rgba(255,255,255,0.6); margin-bottom: 36px; font-size: 1rem; }
+    .btn-white {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: white; color: var(--ink);
+      padding: 13px 28px; border-radius: 9px;
+      font-size: 0.9375rem; font-weight: 500;
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    .btn-white:hover { opacity: 0.9; }
+    .cta-note { color: rgba(255,255,255,0.4); font-size: 0.8rem; margin-top: 16px; }
+
+    /* FOOTER */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 48px;
+      display: flex; justify-content: space-between; align-items: center;
+      max-width: 1100px; margin: 0 auto;
+    }
+    .footer-logo { font-family: 'Instrument Serif', serif; font-size: 1rem; }
+    .footer-links { display: flex; gap: 24px; }
+    .footer-links a { font-size: 0.85rem; color: var(--ink-3); text-decoration: none; }
+    .footer-links a:hover { color: var(--ink-2); }
+    .footer-copy { font-size: 0.8rem; color: var(--ink-3); }
+
+    /* RESPONSIVE */
+    @media (max-width: 768px) {
+      nav { padding: 14px 24px; }
+      .hero { grid-template-columns: 1fr; padding: 120px 24px 64px; gap: 48px; }
+      .hero-visual { display: none; }
+      .supported, .features, .cta-section { padding-left: 24px; padding-right: 24px; }
+      .how { padding-left: 24px; padding-right: 24px; }
+      .features-grid { grid-template-columns: 1fr; }
+      .steps { grid-template-columns: 1fr; gap: 36px; }
+      footer { flex-direction: column; gap: 16px; text-align: center; }
+      .footer-links { flex-wrap: wrap; justify-content: center; }
+      .cta-box { padding: 48px 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="/" class="nav-logo">prompt<span>.</span>ai</a>
+  <a href="https://chromewebstore.google.com" class="nav-cta" target="_blank">
+    Add to Chrome →
+  </a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-content">
+    <div class="badge"><span class="badge-dot"></span> Now in beta · 20 spots left</div>
+    <h1>Prompts that<br/><em>actually work</em></h1>
+    <p class="hero-sub">
+      Type a rough idea. prompt.ai rewrites it into a structured, professional prompt —
+      then auto-fills it into any AI chat. No copy-paste. No prompt engineering degree required.
+    </p>
+    <div class="hero-actions">
+      <a href="https://chromewebstore.google.com" class="btn-primary" target="_blank">
+        Add to Chrome — it's free
+      </a>
+      <a href="https://github.com/Lisayinyy/prompt.ai" class="btn-secondary" target="_blank">
+        View on GitHub
+      </a>
+    </div>
+    <p class="hero-note">Works with ChatGPT, Claude, Kimi, DeepSeek and 15+ AI platforms</p>
+  </div>
+
+  <!-- Mock UI -->
+  <div class="hero-visual">
+    <div class="mock-card">
+      <div class="mock-header">
+        <span class="mock-logo">prompt.ai</span>
+        <span class="mock-version">v1.2</span>
+      </div>
+      <div class="mock-tabs">
+        <div class="mock-tab active">✦ Optimize</div>
+        <div class="mock-tab">⊙ History</div>
+        <div class="mock-tab">↗ Insights</div>
+      </div>
+      <div class="mock-label">Target AI</div>
+      <div class="mock-select"><span>⚡ MiniMax</span><span>∨</span></div>
+      <div class="mock-label">Tone</div>
+      <div class="mock-tones">
+        <div class="mock-tone active">Professional</div>
+        <div class="mock-tone">Casual</div>
+        <div class="mock-tone">Academic</div>
+        <div class="mock-tone">Creative</div>
+      </div>
+      <div class="mock-label">Your prompt</div>
+      <div class="mock-input">Write a WeChat article about AI trends this week</div>
+      <div class="mock-recommend">
+        <div class="mock-recommend-title">✏ Detected: Writing task</div>
+        <div class="mock-model">
+          <div class="mock-model-info">
+            <div class="mock-model-num num-1">1</div>
+            <div>
+              <div class="mock-model-name">Claude Sonnet <span class="mock-model-tag">Best writer</span></div>
+            </div>
+          </div>
+          <span class="mock-go">Use →</span>
+        </div>
+        <div class="mock-model">
+          <div class="mock-model-info">
+            <div class="mock-model-num num-2">2</div>
+            <div>
+              <div class="mock-model-name">MiniMax M2.7 <span class="mock-model-tag perf">Best value</span></div>
+            </div>
+          </div>
+          <span class="mock-go">Use →</span>
+        </div>
+      </div>
+      <div class="mock-btn">✦ Optimize prompt</div>
+    </div>
+  </div>
+</section>
+
+<!-- SUPPORTED PLATFORMS -->
+<div class="supported">
+  <p class="supported-label">Works on 15+ AI platforms</p>
+  <div class="supported-logos">
+    <span class="logo-pill">ChatGPT</span>
+    <span class="logo-pill">Claude</span>
+    <span class="logo-pill">Kimi</span>
+    <span class="logo-pill">DeepSeek</span>
+    <span class="logo-pill">Gemini</span>
+    <span class="logo-pill">Genspark</span>
+    <span class="logo-pill">Grok</span>
+    <span class="logo-pill">Perplexity</span>
+    <span class="logo-pill">Doubao</span>
+    <span class="logo-pill">Qwen</span>
+    <span class="logo-pill">+ more</span>
+  </div>
+</div>
+
+<!-- FEATURES -->
+<section class="features">
+  <div class="section-label">Features</div>
+  <h2 class="section-title">Everything you need<br/>to get better AI answers</h2>
+  <p class="section-sub">Built for people who use AI every day but don't want to become prompt engineers.</p>
+
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">✦</div>
+      <div class="feature-title">One-click optimization</div>
+      <p class="feature-desc">Paste your rough idea. Get a structured, high-quality prompt back in seconds — with context, format, and intent built in.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">→</div>
+      <div class="feature-title">Auto-fill into any AI</div>
+      <p class="feature-desc">Your optimized prompt is injected directly into the AI chat input. No copy-paste, no switching tabs — just click and go.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">↗</div>
+      <div class="feature-title">AI model recommender</div>
+      <p class="feature-desc">Detects your task type and recommends the best AI model for the job, based on real Artificial Analysis benchmark data.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">⊙</div>
+      <div class="feature-title">Prompt history</div>
+      <p class="feature-desc">Every optimized prompt is saved automatically. Search, reuse, and refine your best prompts across sessions.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">◎</div>
+      <div class="feature-title">Insights dashboard</div>
+      <p class="feature-desc">See how you use AI — which task types you run most, which models you prefer, and how your prompt quality evolves over time.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">⊕</div>
+      <div class="feature-title">Chinese & English</div>
+      <p class="feature-desc">Full bilingual support. Switch between languages anytime. Works equally well for Chinese-language AI workflows.</p>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how">
+  <div class="how-inner">
+    <div class="section-label">How it works</div>
+    <h2 class="section-title">Three steps to a better answer</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">01</div>
+        <div class="step-title">Write your rough idea</div>
+        <p class="step-desc">Just type what you want in plain language. No special syntax, no prompt templates. The messier the better — that's what we're here for.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <div class="step-title">Get it optimized</div>
+        <p class="step-desc">prompt.ai rewrites your input into a structured, professional prompt with the right context, tone, and format for your target AI.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <div class="step-title">Auto-fill and send</div>
+        <p class="step-desc">One click fills the optimized prompt directly into your AI chat. Works on ChatGPT, Claude, Kimi, and 12+ more platforms.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <div class="cta-box">
+    <h2>Get better answers from AI.<br/>Starting now.</h2>
+    <p>Free to install. Beta access limited to 20 users.<br/>Leave a comment to request early access.</p>
+    <a href="https://chromewebstore.google.com" class="btn-white" target="_blank">
+      Add to Chrome — free
+    </a>
+    <p class="cta-note">Chrome Extension · No signup required to try</p>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <span class="footer-logo">prompt.ai</span>
+  <div class="footer-links">
+    <a href="/privacy.html">Privacy Policy</a>
+    <a href="https://github.com/Lisayinyy/prompt.ai" target="_blank">GitHub</a>
+    <a href="mailto:hi@prompt-ai.work">Contact</a>
+  </div>
+  <span class="footer-copy">© 2026 prompt.ai</span>
+</footer>
+
+</body>
+</html>
