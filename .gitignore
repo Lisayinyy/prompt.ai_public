@@ -6,4 +6,5 @@ dist/
 .DS_Store
 .env*
 .omc/
+.claude/
 node_modules

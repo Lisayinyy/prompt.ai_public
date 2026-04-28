@@ -873,6 +873,7 @@ export default function Sidebar() {
   const lastInputRef = useRef<string>("");
   const [isNewTopic, setIsNewTopic] = useState(false); // 是否刚切换了新话题
   const [showContext, setShowContext] = useState(false); // 上下文预览面板
+  const [memoryHint, setMemoryHint] = useState<string>(""); // v7.8: "已记住 N 条该任务历史"
 
   // 语义相似度检测（简单关键词重叠，不调 API）
   const isSameTopic = (a: string, b: string): boolean => {
@@ -945,14 +946,39 @@ export default function Sidebar() {
     };
   }
 
-  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1) {
+  // ─── v7.8: 用户级 × 任务级 风格记忆缓存（60s TTL）───────────
+  const memoryCacheRef = useRef<Map<string, { profile: any; examples: any[]; ts: number }>>(new Map());
+  const MEMORY_TTL_MS = 60_000;
+
+  async function loadUserMemory(taskType: string): Promise<{ profile: any; examples: any[] }> {
+    if (!user) return { profile: null, examples: [] };
+    const cacheKey = `${user.id}::${taskType}`;
+    const cached = memoryCacheRef.current.get(cacheKey);
+    if (cached && Date.now() - cached.ts < MEMORY_TTL_MS) {
+      return { profile: cached.profile, examples: cached.examples };
+    }
+    try {
+      const [profileRes, examplesRes] = await Promise.all([
+        supabase.rpc("get_user_task_profile", { p_user_id: user.id, p_task_type: taskType }),
+        supabase.rpc("get_top_user_prompts", { p_user_id: user.id, p_task_type: taskType, p_limit: 2 }),
+      ]);
+      const profile = (profileRes.data as any) || null;
+      const examples = Array.isArray(examplesRes.data) ? examplesRes.data : [];
+      memoryCacheRef.current.set(cacheKey, { profile, examples, ts: Date.now() });
+      return { profile, examples };
+    } catch {
+      return { profile: null, examples: [] };
+    }
+  }
+
+  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general") {
     void round;
     const validHistory = messages.slice(-6).filter((m: any) => m.role && m.content);
 
     const res = await fetch(`${API_URL}/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement }),
+      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType }),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -1072,7 +1098,19 @@ export default function Sidebar() {
     const currentRound = Math.floor(conversationRef.current.length / 2) + 1;
 
     try {
-      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound);
+      // v7.8: 拉取用户风格记忆 + 历史高分示例
+      const taskTypeForMemory = (detectedTask as string) || "general";
+      const { profile: userProfile, examples: topExamples } = await loadUserMemory(taskTypeForMemory);
+      const sampleN = Number(userProfile?.sample_count || 0);
+      if (sampleN >= 3) {
+        setMemoryHint(lang === "zh"
+          ? `已记住你 ${sampleN} 条「${taskTypeForMemory}」任务的历史风格`
+          : `Remembered ${sampleN} past "${taskTypeForMemory}" prompts`);
+      } else {
+        setMemoryHint("");
+      }
+
+      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound, userProfile, topExamples, taskTypeForMemory);
 
       if (data.diagnosis && data.diagnosis !== "已优化") {
         setDiagnosis(data.diagnosis.slice(0, 40));
@@ -1987,6 +2025,13 @@ export default function Sidebar() {
                     exit={{ opacity: 0, height: 0 }}
                     transition={{ duration: 0.25 }}
                   >
+                    {/* v7.8: 风格记忆提示 */}
+                    {memoryHint && (
+                      <div className="inline-flex items-center px-2 py-1 bg-[#f5f0ff] border border-[#e0d3f9] rounded-full mb-2">
+                        <span className="text-[11px] text-[#5d3eb8]" style={{ fontWeight: 600 }}>✨ {memoryHint}</span>
+                      </div>
+                    )}
+
                     {/* Diagnosis card */}
                     {diagnosis && (
                       <div className="flex items-start gap-2 px-3 py-2.5 bg-[#fffbf0] border border-[#f0e4c8] rounded-lg mb-3">

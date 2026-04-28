@@ -42,8 +42,39 @@ function checkGuardrails(text) {
   return null;
 }
 
+// ─── 用户风格画像 → system prompt 块 ─────────────────────
+// userProfile shape: { sample_count, top_tone, avg_input_len, avg_optimized_len, up_rate }
+// topExamples shape: [{ original_text, optimized_text, combined_score, has_upvote }]
+function buildUserProfileBlock(userProfile, taskType) {
+  if (!userProfile || typeof userProfile !== "object") return "";
+  const n = Number(userProfile.sample_count || 0);
+  if (n < 3) return ""; // 样本不足，跳过个性化
+  const lines = [];
+  lines.push(`\n## USER STYLE PROFILE (task: ${taskType || "general"}, based on ${n} past prompts)`);
+  if (userProfile.top_tone) lines.push(`- preferred tone: ${userProfile.top_tone}`);
+  if (userProfile.avg_optimized_len) lines.push(`- typical optimized length: ~${userProfile.avg_optimized_len} chars`);
+  if (userProfile.avg_input_len) lines.push(`- typical input length: ~${userProfile.avg_input_len} chars`);
+  if (userProfile.up_rate !== null && userProfile.up_rate !== undefined) {
+    lines.push(`- positive feedback rate: ${userProfile.up_rate}%`);
+  }
+  lines.push(`Apply these preferences when sensible, but the current input always overrides.`);
+  return lines.join("\n");
+}
+
+function buildExamplesBlock(topExamples) {
+  if (!Array.isArray(topExamples) || topExamples.length === 0) return "";
+  // 单条裁剪到 ~600 chars，整块预算 ~1300 chars (~300 token)
+  const safe = topExamples.slice(0, 2).map((ex, i) => {
+    const raw = String(ex.original_text || "").slice(0, 200);
+    const opt = String(ex.optimized_text || "").slice(0, 600);
+    return `\nExample ${i + 1} (your past high-quality optimization):\n  raw: ${raw}\n  optimized: ${opt}`;
+  }).join("");
+  if (!safe) return "";
+  return `\n## REFERENCE EXAMPLES${safe}\nMatch the structure and style of these past examples when sensible.`;
+}
+
 // ─── 动态系统提示词（根据 targetAI 差异化）─────────────────
-function buildSystemPrompt(targetAI = "any", tone = "Professional") {
+function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general") {
   // 目标 AI 策略
   let targetStrategy = "";
 
@@ -89,11 +120,16 @@ Optimize for broad compatibility across all major AI systems.
   };
   const toneDesc = toneGuide[tone] || "balanced and clear";
 
+  // 个性化记忆：用户风格画像 + 历史高分示例
+  const userProfileBlock = buildUserProfileBlock(userProfile, taskType);
+  const examplesBlock = buildExamplesBlock(topExamples);
+
   return `You are an elite Prompt Engineer with mastery of the world's best prompting frameworks. Your job: transform any rough user input into a high-quality, immediately usable prompt.
 ${targetStrategy}
 
 ## TONE REQUIREMENT
 Apply this tone to the optimized prompt: ${tone} — ${toneDesc}
+${userProfileBlock}${examplesBlock}
 
 ## YOUR OPTIMIZATION ENGINE
 
@@ -723,7 +759,7 @@ export default {
     }
 
     try {
-      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false } = await request.json();
+      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false, userProfile = null, topExamples = null, taskType = "general" } = await request.json();
 
       if (!prompt || !prompt.trim()) {
         return new Response(
@@ -746,8 +782,8 @@ export default {
         );
       }
 
-      // ─── 构建动态系统提示词 ────────────────────────────────
-      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone);
+      // ─── 构建动态系统提示词（v7.8: 注入 user-task 风格记忆）────
+      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType);
 
       // ─── 构建消息列表（支持多轮对话历史）────────────────────
       // 历史消息：最多保留最近 6 条，避免 token 过多
