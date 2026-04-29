@@ -32,6 +32,7 @@ import {
   ChevronLeft,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { MemoryPanel } from "./MemoryPanel";
 import {
   PieChart,
   Pie,
@@ -874,6 +875,7 @@ export default function Sidebar() {
   const [isNewTopic, setIsNewTopic] = useState(false); // 是否刚切换了新话题
   const [showContext, setShowContext] = useState(false); // 上下文预览面板
   const [memoryHint, setMemoryHint] = useState<string>(""); // v7.8: "已记住 N 条该任务历史"
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false); // v12: L7 透明面板
 
   // 语义相似度检测（简单关键词重叠，不调 API）
   const isSameTopic = (a: string, b: string): boolean => {
@@ -1033,12 +1035,13 @@ export default function Sidebar() {
 
   // v10+v11: fire-and-forget LLM 事实抽取 + 声音指纹合成
   // 流程: extract-facts → add_user_facts → synthesize-voice → set_user_voice_profile → clear cache
-  async function maybeExtractFacts() {
+  // v12: 加 { force: true } 参数,允许 UI 跳过 prompts_since_last >= 10 阈值手动触发
+  async function maybeExtractFacts(opts: { force?: boolean } = {}) {
     if (!user) return;
     try {
       const { data: state } = await supabase.rpc("get_extraction_state", { p_user_id: user.id });
       const promptsSinceLast = Number(state?.prompts_since_last || 0);
-      if (promptsSinceLast < 10) return;
+      if (!opts.force && promptsSinceLast < 10) return;
 
       const { data: recent } = await supabase
         .from("prompts")
@@ -2176,12 +2179,34 @@ export default function Sidebar() {
                     exit={{ opacity: 0, height: 0 }}
                     transition={{ duration: 0.25 }}
                   >
-                    {/* v7.8: 风格记忆提示 */}
-                    {memoryHint && (
-                      <div className="inline-flex items-center px-2 py-1 bg-[#f5f0ff] border border-[#e0d3f9] rounded-full mb-2">
-                        <span className="text-[11px] text-[#5d3eb8]" style={{ fontWeight: 600 }}>✨ {memoryHint}</span>
+                    {/* v7.8: 风格记忆提示 + v12: AI 记忆面板入口 */}
+                    {(memoryHint || user) && (
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        {memoryHint && (
+                          <div className="inline-flex items-center px-2 py-1 bg-[#f5f0ff] border border-[#e0d3f9] rounded-full">
+                            <span className="text-[11px] text-[#5d3eb8]" style={{ fontWeight: 600 }}>✨ {memoryHint}</span>
+                          </div>
+                        )}
+                        {user && (
+                          <button
+                            onClick={() => setMemoryPanelOpen(true)}
+                            className="inline-flex items-center px-2 py-1 bg-white border border-[#e0d3f9] hover:bg-[#f5f0ff] rounded-full transition-colors cursor-pointer"
+                            title="查看 prompt.ai 学到的你的 AI 偏好画像"
+                            type="button"
+                          >
+                            <span className="text-[11px] text-[#5d3eb8]" style={{ fontWeight: 500 }}>🧠 我的 AI 记忆</span>
+                          </button>
+                        )}
                       </div>
                     )}
+
+                    {/* v12: Memory Panel modal (Dialog Portal — 渲染位置不影响布局) */}
+                    <MemoryPanel
+                      open={memoryPanelOpen}
+                      onClose={() => setMemoryPanelOpen(false)}
+                      user={user}
+                      onForceExtract={() => maybeExtractFacts({ force: true })}
+                    />
 
                     {/* Diagnosis card */}
                     {diagnosis && (
