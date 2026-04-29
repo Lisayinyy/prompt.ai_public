@@ -578,15 +578,29 @@ export default function Sidebar() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  // 检查登录状态
+  // 检查登录状态 + v13: JWT 同步到 chrome.storage 让 content.js 能调 Supabase
   useEffect(() => {
+    const syncToStorage = (session: any) => {
+      if (typeof chrome === "undefined" || !chrome?.storage?.local) return;
+      if (session?.access_token && session?.user?.id) {
+        chrome.storage.local.set({
+          promptai_jwt: session.access_token,
+          promptai_user_id: session.user.id,
+        });
+      } else {
+        chrome.storage.local.remove(["promptai_jwt", "promptai_user_id"]);
+      }
+    };
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setIsLoggedIn(!!session);
       setUser(session?.user ?? null);
+      syncToStorage(session);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setIsLoggedIn(!!session);
       setUser(session?.user ?? null);
+      syncToStorage(session);
     });
     return () => subscription.unsubscribe();
   }, []);

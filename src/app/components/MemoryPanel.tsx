@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Button } from "./ui/button";
+import { Switch } from "./ui/switch";
 
 interface UserFact {
   fact: string;
@@ -52,6 +53,24 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   const [facts, setFacts] = useState<Array<{ id: string; fact: string; confidence: number; task_type: string | null; extracted_at: string }>>([]);
   const [state, setState] = useState<ExtractionState | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
+  // v13: silent capture
+  const [captureEnabled, setCaptureEnabled] = useState<boolean>(true);
+  const [sourceBreakdown, setSourceBreakdown] = useState<{ optimize: number; silent_capture: number; manual: number } | null>(null);
+
+  // v13: 读 chrome.storage.local 的 captureEnabled (mount 时 + open 时刷新)
+  useEffect(() => {
+    if (typeof chrome === "undefined" || !chrome?.storage?.local) return;
+    chrome.storage.local.get(["promptai_capture_enabled"], (res) => {
+      setCaptureEnabled(res.promptai_capture_enabled !== false);
+    });
+  }, [open]);
+
+  const handleToggleCapture = (next: boolean) => {
+    setCaptureEnabled(next); // optimistic
+    if (typeof chrome !== "undefined" && chrome?.storage?.local) {
+      chrome.storage.local.set({ promptai_capture_enabled: next });
+    }
+  };
 
   const loadAll = useCallback(async () => {
     if (!user) return;
@@ -59,7 +78,8 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
     setErrorMsg("");
     try {
       // 三路并行: voice / facts (从 user_facts 表直接拉,带 id 用于删除) / extraction state
-      const [voiceRes, factsRes, stateRes] = await Promise.all([
+      // v13: 加第 4 路 source breakdown
+      const [voiceRes, factsRes, stateRes, sourceRes] = await Promise.all([
         supabase.rpc("get_user_voice_profile", { p_user_id: user.id }),
         supabase
           .from("user_facts")
@@ -70,6 +90,7 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
           .order("extracted_at", { ascending: false })
           .limit(20),
         supabase.rpc("get_extraction_state", { p_user_id: user.id }),
+        supabase.rpc("get_prompt_source_breakdown", { p_user_id: user.id }),
       ]);
 
       const v = (voiceRes.data as any)?.voice_profile;
@@ -78,6 +99,7 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
 
       setFacts(Array.isArray(factsRes.data) ? factsRes.data as any : []);
       setState((stateRes.data as any) || null);
+      setSourceBreakdown((sourceRes.data as any) || { optimize: 0, silent_capture: 0, manual: 0 });
     } catch (e) {
       setErrorMsg((e as Error)?.message || "加载失败");
     } finally {
@@ -159,6 +181,25 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               </div>
             )}
 
+            {/* 📡 跨平台监听 (v13) */}
+            <section className="rounded-lg border border-[#e0d3f9] bg-[#faf7ff] p-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <h3 className="text-sm font-semibold text-zinc-900 flex items-center gap-1.5">
+                  <span>📡</span> <span>跨平台监听</span>
+                </h3>
+                <Switch
+                  checked={captureEnabled}
+                  onCheckedChange={handleToggleCapture}
+                  aria-label="跨平台监听开关"
+                />
+              </div>
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                {captureEnabled
+                  ? `已开启。在 ChatGPT/Claude/Gemini 等 22 个 AI 平台,你发送的 prompt 会被自动记录到你的 prompt.ai 记忆。已捕获 ${sourceBreakdown?.silent_capture ?? 0} 条。`
+                  : "已关闭。仅在 prompt.ai 主动优化的 prompt 才会记录。"}
+              </p>
+            </section>
+
             {/* 🎤 Voice Profile */}
             <section>
               <div className="flex items-center justify-between mb-2">
@@ -231,10 +272,10 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                   <div className="text-zinc-500">提取出的偏好</div>
                   <div className="text-base font-semibold text-zinc-900">{state?.facts_count ?? "—"}</div>
                 </div>
-                <div className="rounded-md bg-zinc-50 px-3 py-2">
-                  <div className="text-zinc-500">声音长度</div>
-                  <div className="text-base font-semibold text-zinc-900">
-                    {voiceProfile ? `${voiceProfile.length} 字` : "—"}
+                <div className="rounded-md bg-[#faf7ff] px-3 py-2 border border-[#e0d3f9]">
+                  <div className="text-[#7c3aed]">📡 跨平台捕获</div>
+                  <div className="text-base font-semibold text-[#5d3eb8]">
+                    {sourceBreakdown?.silent_capture ?? "—"}
                   </div>
                 </div>
                 <div className="rounded-md bg-zinc-50 px-3 py-2">

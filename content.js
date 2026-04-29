@@ -8,6 +8,36 @@
 
   const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
 
+  // v13: silent capture 配置
+  const SUPABASE_URL = "https://vyuzkbdxsweaqftyqifh.supabase.co";
+  const SUPABASE_ANON_KEY = "sb_publishable_x_ruVcqxkYJNLEVDeQDwwg_H3my-InQ";
+
+  // 平台名映射 (hostname → 简短 platform code)
+  const PLATFORM_MAP = {
+    "chatgpt.com": "chatgpt",
+    "chat.openai.com": "chatgpt",
+    "claude.ai": "claude",
+    "kimi.com": "kimi",
+    "www.kimi.com": "kimi",
+    "kimi.moonshot.cn": "kimi",
+    "chat.deepseek.com": "deepseek",
+    "gemini.google.com": "gemini",
+    "www.doubao.com": "doubao",
+    "hailuoai.com": "hailuo",
+    "tongyi.aliyun.com": "tongyi",
+    "yiyan.baidu.com": "yiyan",
+    "chatglm.cn": "chatglm",
+    "chat.mistral.ai": "mistral",
+    "www.perplexity.ai": "perplexity",
+    "grok.com": "grok",
+    "copilot.microsoft.com": "copilot",
+    "agent.minimax.io": "minimax-agent",
+    "chat.z.ai": "zai",
+    "qwen.ai": "qwen",
+    "www.genspark.ai": "genspark",
+    "genspark.ai": "genspark",
+  };
+
   // 输入框选择器（按优先级排列）
   const INPUT_SELECTORS = [
     "#prompt-textarea",                              // ChatGPT
@@ -26,11 +56,42 @@
   let activeInput = null;
   let currentLang = "zh";
 
+  // v13: silent capture 状态
+  let lastInputText = "";              // 输入框上一次的非空文本 (清空时拿这个)
+  let recentlyFilledByExt = false;     // 插件刚 fillInput,2s 内忽略清空
+  const capturedHashes = new Set();    // 最近 5s 抓过的文本 hash 去重
+  let captureEnabled = true;           // 默认开,用户在 MemoryPanel 可关
+  let jwt = null;                      // 由 Sidebar 同步到 chrome.storage
+  let userId = null;
+  let captureWatcherStarted = false;   // watchForCapture 单例 guard
+
   // 从 storage 读取语言设置
   if (typeof chrome !== "undefined" && chrome?.storage) {
     chrome.storage.local.get(["promptai_lang"], (res) => {
       if (res.promptai_lang) currentLang = res.promptai_lang;
     });
+
+    // v13: 加载 silent capture 配置 (JWT / userId / captureEnabled)
+    chrome.storage.local.get(
+      ["promptai_jwt", "promptai_user_id", "promptai_capture_enabled"],
+      (res) => {
+        jwt = res.promptai_jwt || null;
+        userId = res.promptai_user_id || null;
+        captureEnabled = res.promptai_capture_enabled !== false; // 默认 true
+      }
+    );
+
+    // v13: 监听 storage 变化 (用户登录/登出/切 toggle 实时生效)
+    if (chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        if (changes.promptai_jwt) jwt = changes.promptai_jwt.newValue || null;
+        if (changes.promptai_user_id) userId = changes.promptai_user_id.newValue || null;
+        if (changes.promptai_capture_enabled) {
+          captureEnabled = changes.promptai_capture_enabled.newValue !== false;
+        }
+      });
+    }
   }
 
   // ========= 查找可见输入框 =========
@@ -46,6 +107,10 @@
 
   // ========= 填入文本到输入框 =========
   function fillInput(el, text) {
+    // v13: 标记"插件刚填入",防止 silent capture 误抓 (插件填入也会触发 input 事件)
+    recentlyFilledByExt = true;
+    setTimeout(() => { recentlyFilledByExt = false; }, 2500);
+
     el.focus();
 
     if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
@@ -94,6 +159,93 @@
       return el.value;
     }
     return el.innerText || el.textContent || "";
+  }
+
+  // ========= v13: silent capture helpers =========
+
+  // hostname → platform code
+  function getCurrentPlatform() {
+    const host = (location.hostname || "").toLowerCase();
+    return PLATFORM_MAP[host] || host.split(".")[0] || "unknown";
+  }
+
+  // 极简字符串 hash (用于 5s 去重)
+  function quickHash(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) - h) + str.charCodeAt(i);
+      h |= 0;
+    }
+    return String(h);
+  }
+
+  // 主 capture 函数: POST 到 Supabase prompts 表 (用户 JWT auth, RLS 自动校验)
+  async function captureSilentPrompt(text) {
+    if (!captureEnabled || !jwt || !userId) return;
+    const trimmed = String(text || "").trim();
+    if (trimmed.length < 10 || trimmed.length > 8000) return;
+
+    // 5 秒去重 (防 React 重渲染时 input 事件重复触发)
+    const hash = quickHash(trimmed);
+    if (capturedHashes.has(hash)) return;
+    capturedHashes.add(hash);
+    setTimeout(() => capturedHashes.delete(hash), 5000);
+
+    const platform = getCurrentPlatform();
+
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/prompts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${jwt}`,
+          "Prefer": "return=minimal",
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          original_text: trimmed,
+          source: "silent_capture",
+          platform: platform,
+          task_type: "general",
+        }),
+      });
+      // 静默成功
+    } catch {
+      // 静默失败,不打扰用户体验
+    }
+  }
+
+  // 输入框监听: 检测"清空"动作 = 用户发送了 prompt
+  function watchForCapture() {
+    if (captureWatcherStarted) return;
+    captureWatcherStarted = true;
+
+    document.addEventListener("input", (e) => {
+      const el = e.target;
+      if (!el || !el.matches) return;
+      // 只在已知 input selector 上工作
+      let isKnownInput = false;
+      for (const sel of INPUT_SELECTORS) {
+        try { if (el.matches(sel)) { isKnownInput = true; break; } } catch {}
+      }
+      if (!isKnownInput) return;
+
+      const currentText = getInputText(el).trim();
+
+      // 检测"清空": 上次有文本 → 现在空 = 大概率是用户按了 Enter / 点了 Send
+      if (lastInputText && !currentText) {
+        if (recentlyFilledByExt) {
+          // 是插件刚 fillInput → 不算用户发送 (但更新 lastInputText 防下轮触发)
+          lastInputText = currentText;
+          return;
+        }
+        // 真用户发送了
+        captureSilentPrompt(lastInputText);
+      }
+
+      lastInputText = currentText;
+    }, true);
   }
 
   // ========= 创建浮动按钮 =========
@@ -217,6 +369,9 @@
 
   // ========= 初始化 =========
   function init() {
+    // v13: silent capture 监听独立启动 (不依赖 activeInput,document 级 input 事件)
+    watchForCapture();
+
     const observer = new MutationObserver(() => {
       const el = findVisibleInput();
       if (el) {
