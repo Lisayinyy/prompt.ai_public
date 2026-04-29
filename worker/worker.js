@@ -102,8 +102,18 @@ function buildUserFactsBlock(userFacts) {
   return `\n## USER PROFILE FACTS (extracted from past usage patterns — these are STABLE preferences)\n${lines}\nThese facts describe who the user IS and what they consistently prefer. Apply them to the optimized output unless the current input clearly overrides them.`;
 }
 
+// v11: LLM 合成的"声音指纹" — 比 facts 列表更连贯、更高优先级
+// userVoiceProfile shape: string (150-300 chars 中文叙事)
+function buildVoiceProfileBlock(userVoiceProfile) {
+  const text = String(userVoiceProfile || "").trim();
+  if (!text || text.length < 30) return "";
+  // 截断防爆 (max 2000 chars,匹配 SQL CHECK)
+  const safe = text.slice(0, 2000);
+  return `\n## YOUR VOICE PROFILE (the unified voice you should write IN — derived from this user's stable patterns)\n${safe}`;
+}
+
 // ─── 动态系统提示词（根据 targetAI 差异化）─────────────────
-function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general", userDislikes = null, userFacts = null) {
+function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general", userDislikes = null, userFacts = null, userVoiceProfile = null) {
   // 目标 AI 策略
   let targetStrategy = "";
 
@@ -149,7 +159,8 @@ Optimize for broad compatibility across all major AI systems.
   };
   const toneDesc = toneGuide[tone] || "balanced and clear";
 
-  // 个性化记忆：用户风格画像 + 历史高分示例 + 反向样本（v8.1）+ LLM 抽取事实（v10）
+  // 个性化记忆：声音指纹（v11，最顶部）+ 风格画像 + 历史高分示例 + 反向样本（v8.1）+ LLM 抽取事实（v10）
+  const voiceProfileBlock = buildVoiceProfileBlock(userVoiceProfile);
   const userProfileBlock = buildUserProfileBlock(userProfile, taskType);
   const examplesBlock = buildExamplesBlock(topExamples);
   const dislikesBlock = buildUserDislikesBlock(userDislikes);
@@ -157,6 +168,7 @@ Optimize for broad compatibility across all major AI systems.
 
   return `You are an elite Prompt Engineer with mastery of the world's best prompting frameworks. Your job: transform any rough user input into a high-quality, immediately usable prompt.
 ${targetStrategy}
+${voiceProfileBlock}
 
 ## TONE REQUIREMENT
 Apply this tone to the optimized prompt: ${tone} — ${toneDesc}
@@ -949,6 +961,113 @@ EXAMPLE OUTPUT:
       }
     }
 
+    // ─── /synthesize-voice 路由 (v11)：把 facts 列表压成一段叙事性的"声音指纹" ──
+    // L6: v10 给离散事实清单,v11 给 LLM 看到的是一段连贯的"用户是谁"叙事
+    // 调 MiniMax-M2.7 (temp=0.4 — 需要一定创造性把事实串成自然语言)
+    if (url.pathname === "/synthesize-voice") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const { facts } = await request.json();
+        if (!Array.isArray(facts) || facts.length === 0) {
+          return new Response(JSON.stringify({ error: "facts array required" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        // 整理 facts 给 LLM:按 confidence 倒序,带 task_type 标注
+        const sortedFacts = facts
+          .filter(f => f && typeof f.fact === "string" && f.fact.trim())
+          .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0))
+          .slice(0, 15)
+          .map((f, i) => {
+            const conf = Number(f.confidence || 0).toFixed(2);
+            const tt = f.task_type ? ` [task=${String(f.task_type).slice(0, 30)}]` : " [全局]";
+            return `${i + 1}. ${String(f.fact).slice(0, 300)}${tt} (conf=${conf})`;
+          })
+          .join("\n");
+
+        if (!sortedFacts) {
+          return new Response(JSON.stringify({ error: "no valid facts after filtering" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        const VOICE_SYNTHESIS_PROMPT = `You are a "voice profile synthesizer" for a personal AI memory system. Given a list of preference FACTS extracted from a single user's prompt history, your job: synthesize them into ONE cohesive, executable VOICE PROFILE that will be injected as a system-prompt prefix to guide future prompt optimization.
+
+OUTPUT REQUIREMENTS:
+1. Write directly TO an LLM (用 "你正在为...工作。" 开头)
+2. Length: STRICTLY 150-300 Chinese characters
+3. Compress facts losslessly: keep all high-confidence info, downplay low-confidence (<0.7)
+4. For task-specific facts: 用条件式表达 "做邮件类时…，做分析类时…"
+5. Integration order: IDENTITY first → general STYLE → task-specific patterns
+6. End with a directive sentence (e.g. "请把这套声音作为优化基线,除非当前 input 明确要求其他风格。")
+
+DO NOT:
+- Use bullet points or lists — pure flowing narrative
+- Add meta commentary ("以下是用户画像", "根据事实总结", etc.)
+- Mention confidence scores or fact numbering
+- Output English (除非用户事实里就有英文术语,可以原样保留)
+
+EXAMPLE OUTPUT (study format, not content):
+"你正在为一位资深产品经理工作。Ta 的写作风格特征鲜明:整体语气专业、自信,沟通偏好直接说重点不过度解释,熟练使用 OKR、KR、Sprint 等英文管理术语并自然融入中文表达。做邮件类任务时严格遵循「正式简洁、200 字内、零 emoji、专业但不卑微」;做分析类任务时偏好 Markdown 结构化输出(表格+总结段落,800 字内)。请把这套声音作为优化基线,除非当前 input 明确要求其他风格。"
+
+OUTPUT: ONLY the voice profile paragraph itself. No JSON, no markdown wrapper, no explanation.`;
+
+        const userMsg = `请把以下 ${facts.length} 条用户偏好事实合成为一段声音指纹:\n\n${sortedFacts}`;
+
+        const minimaxPayload = {
+          model: MODEL,
+          messages: [
+            { role: "system", content: VOICE_SYNTHESIS_PROMPT },
+            { role: "user", content: userMsg },
+          ],
+          temperature: 0.4,  // 需要一点创造性,但不能太散
+          max_tokens: 800,
+        };
+
+        const { response: apiResponse, lastErrorText, lastStatus } = await callMiniMaxWithRetry(env, minimaxPayload);
+
+        if (!apiResponse.ok) {
+          console.error("MiniMax synthesis error:", lastStatus, lastErrorText);
+          return new Response(JSON.stringify({ error: "Synthesis LLM failed", upstreamStatus: lastStatus }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        const data = await apiResponse.json();
+        const rawContent = data.choices?.[0]?.message?.content || "";
+        const cleaned = cleanModelOutput(rawContent).trim();
+
+        // 校验长度 (30-2000 chars,匹配 SQL CHECK)
+        if (cleaned.length < 30 || cleaned.length > 2000) {
+          console.error("Voice profile out of range:", cleaned.length, cleaned.slice(0, 100));
+          return new Response(JSON.stringify({
+            error: "Voice profile length out of range",
+            got_length: cleaned.length,
+            preview: cleaned.slice(0, 200),
+          }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({
+          voice_profile: cleaned,
+          source_facts_count: facts.length,
+        }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Synthesize-voice error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,
@@ -957,7 +1076,7 @@ EXAMPLE OUTPUT:
     }
 
     try {
-      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false, userProfile = null, topExamples = null, taskType = "general", userDislikes = null, userFacts = null } = await request.json();
+      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false, userProfile = null, topExamples = null, taskType = "general", userDislikes = null, userFacts = null, userVoiceProfile = null } = await request.json();
 
       if (!prompt || !prompt.trim()) {
         return new Response(
@@ -980,8 +1099,8 @@ EXAMPLE OUTPUT:
         );
       }
 
-      // ─── 构建动态系统提示词（v10: + LLM 抽取事实）────
-      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType, userDislikes, userFacts);
+      // ─── 构建动态系统提示词（v11: + voice profile）────
+      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType, userDislikes, userFacts, userVoiceProfile);
 
       // ─── 构建消息列表（支持多轮对话历史）────────────────────
       // 历史消息：最多保留最近 6 条，避免 token 过多
@@ -1062,7 +1181,18 @@ EXAMPLE OUTPUT:
         );
       }
 
-      return new Response(JSON.stringify(result), {
+      return new Response(JSON.stringify({
+        ...result,
+        _debug: {
+          memory_applied: {
+            voice_chars: typeof userVoiceProfile === "string" ? userVoiceProfile.length : 0,
+            profile_active: Number(userProfile?.sample_count || 0) >= 3,
+            examples_n: Array.isArray(topExamples) ? topExamples.length : 0,
+            dislikes_n: Array.isArray(userDislikes) ? userDislikes.length : 0,
+            facts_n: Array.isArray(userFacts) ? userFacts.length : 0,
+          },
+        },
+      }), {
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
     } catch (err) {

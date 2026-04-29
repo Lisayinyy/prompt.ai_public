@@ -947,43 +947,48 @@ export default function Sidebar() {
   }
 
   // ─── v7.8: 用户级 × 任务级 风格记忆缓存（60s TTL）───────────
-  const memoryCacheRef = useRef<Map<string, { profile: any; dislikes: any[]; facts: any[]; ts: number }>>(new Map());
+  const memoryCacheRef = useRef<Map<string, { profile: any; dislikes: any[]; facts: any[]; voiceProfile: string | null; ts: number }>>(new Map());
   const MEMORY_TTL_MS = 60_000;
 
-  // v10: 拉取用户记忆 + 语义 few-shot + LLM 抽取事实
-  // - profile / dislikes / facts: task-level，60s 缓存（不依赖 input）
+  // v11: 拉取用户记忆 + 语义 few-shot + LLM 抽取事实 + 声音指纹
+  // - profile / dislikes / facts / voiceProfile: task-level，60s 缓存（不依赖 input）
   // - examples: input-level，每次现拉（语义检索 → fallback v8 score-based）
   // - queryEmbedding: 当前 input 的 1024 维向量，optimize 完成后写回新 prompt 行
   async function loadUserMemory(
     taskType: string,
     currentInput?: string,
-  ): Promise<{ profile: any; examples: any[]; dislikes: any[]; facts: any[]; queryEmbedding: number[] | null }> {
-    if (!user) return { profile: null, examples: [], dislikes: [], facts: [], queryEmbedding: null };
+  ): Promise<{ profile: any; examples: any[]; dislikes: any[]; facts: any[]; voiceProfile: string | null; queryEmbedding: number[] | null }> {
+    if (!user) return { profile: null, examples: [], dislikes: [], facts: [], voiceProfile: null, queryEmbedding: null };
 
-    // ─ 第 1 路：profile + dislikes + facts（task-level，可缓存）
+    // ─ 第 1 路：profile + dislikes + facts + voice（task-level，可缓存）
     const cacheKey = `${user.id}::${taskType}`;
     const cached = memoryCacheRef.current.get(cacheKey);
     let profile: any = null;
     let dislikes: any[] = [];
     let facts: any[] = [];
+    let voiceProfile: string | null = null;
 
     if (cached && Date.now() - cached.ts < MEMORY_TTL_MS) {
       profile = cached.profile;
       dislikes = cached.dislikes;
       facts = cached.facts;
+      voiceProfile = cached.voiceProfile;
     } else {
       try {
-        const [profileRes, dislikesRes, factsRes] = await Promise.all([
+        const [profileRes, dislikesRes, factsRes, voiceRes] = await Promise.all([
           supabase.rpc("get_user_task_profile", { p_user_id: user.id, p_task_type: taskType }),
           supabase.rpc("get_user_recent_dislikes", { p_user_id: user.id, p_task_type: taskType, p_limit: 3 }),
           supabase.rpc("get_user_facts", { p_user_id: user.id, p_task_type: taskType, p_limit: 8 }),
+          supabase.rpc("get_user_voice_profile", { p_user_id: user.id }),
         ]);
         profile = (profileRes.data as any) || null;
         dislikes = Array.isArray(dislikesRes.data) ? dislikesRes.data : [];
         facts = Array.isArray(factsRes.data) ? factsRes.data : [];
-        memoryCacheRef.current.set(cacheKey, { profile, dislikes, facts, ts: Date.now() });
+        const v = (voiceRes.data as any)?.voice_profile;
+        voiceProfile = typeof v === "string" && v.trim() ? v : null;
+        memoryCacheRef.current.set(cacheKey, { profile, dislikes, facts, voiceProfile, ts: Date.now() });
       } catch {
-        // RPC 失败不致命，profile/dislikes/facts 保持为空
+        // RPC 失败不致命
       }
     }
 
@@ -1009,13 +1014,10 @@ export default function Sidebar() {
           });
           examples = Array.isArray(semanticRes.data) ? semanticRes.data : [];
         }
-      } catch {
-        // 语义路径失败 → 兜底走 v8
-      }
+      } catch {}
     }
 
     if (examples.length === 0) {
-      // Fallback：要么 worker /embed 没配，要么用户还没 backfill embedding
       try {
         const fallbackRes = await supabase.rpc("get_top_user_prompts", {
           p_user_id: user.id,
@@ -1026,12 +1028,11 @@ export default function Sidebar() {
       } catch {}
     }
 
-    return { profile, examples, dislikes, facts, queryEmbedding };
+    return { profile, examples, dislikes, facts, voiceProfile, queryEmbedding };
   }
 
-  // v10: fire-and-forget LLM 事实抽取
-  // 调用时机: 每次 optimize 成功后,异步检查"距离上次抽取累计 >= 10 条新 prompt"则触发
-  // 完成后清缓存,下次 optimize 立即用新事实
+  // v10+v11: fire-and-forget LLM 事实抽取 + 声音指纹合成
+  // 流程: extract-facts → add_user_facts → synthesize-voice → set_user_voice_profile → clear cache
   async function maybeExtractFacts() {
     if (!user) return;
     try {
@@ -1049,7 +1050,7 @@ export default function Sidebar() {
 
       if (!Array.isArray(recent) || recent.length === 0) return;
 
-      const res = await fetch(`${API_URL}/extract-facts`, {
+      const factsRes = await fetch(`${API_URL}/extract-facts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1060,31 +1061,57 @@ export default function Sidebar() {
           })),
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!Array.isArray(data?.facts) || data.facts.length === 0) return;
+      const factsData = await factsRes.json().catch(() => ({}));
+      if (!Array.isArray(factsData?.facts) || factsData.facts.length === 0) return;
 
+      // 写入新事实
       await supabase.rpc("add_user_facts", {
-        p_facts: data.facts,
+        p_facts: factsData.facts,
         p_source_prompt_ids: recent.map((p: any) => p.id),
       });
 
-      // 清缓存,下次 loadUserMemory 拿新 facts
+      // v11: 链式合成 voice profile (基于全部最新 facts,不只是这次新增的)
+      try {
+        const { data: allFacts } = await supabase.rpc("get_user_facts", { p_user_id: user.id, p_limit: 15 });
+        if (Array.isArray(allFacts) && allFacts.length > 0) {
+          const voiceRes = await fetch(`${API_URL}/synthesize-voice`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ facts: allFacts }),
+          });
+          const voiceData = await voiceRes.json().catch(() => ({}));
+          if (typeof voiceData?.voice_profile === "string" && voiceData.voice_profile.length >= 30) {
+            // 简易 hash: count + 前 50 个 fact 字符串拼接长度
+            const hash = `${allFacts.length}::${allFacts.map((f: any) => String(f.fact || "").slice(0, 30)).join("|").length}`;
+            await supabase.rpc("set_user_voice_profile", {
+              p_voice_profile: voiceData.voice_profile,
+              p_source_facts_count: allFacts.length,
+              p_source_facts_hash: hash,
+            });
+          }
+        }
+      } catch (e) {
+        // voice 合成失败不致命,facts 已经写入,下次 extraction 再尝试
+        // eslint-disable-next-line no-console
+        console.warn("Voice synthesis failed (non-fatal):", (e as Error)?.message);
+      }
+
+      // 清缓存,下次 loadUserMemory 拿新 facts + 新 voice
       memoryCacheRef.current.clear();
     } catch (e) {
-      // 完全不能阻塞 UI;失败静默
       // eslint-disable-next-line no-console
       console.warn("Fact extraction failed (non-fatal):", (e as Error)?.message);
     }
   }
 
-  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general", userDislikes: any[] = [], userFacts: any[] = []) {
+  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general", userDislikes: any[] = [], userFacts: any[] = [], userVoiceProfile: string | null = null) {
     void round;
     const validHistory = messages.slice(-6).filter((m: any) => m.role && m.content);
 
     const res = await fetch(`${API_URL}/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType, userDislikes, userFacts }),
+      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType, userDislikes, userFacts, userVoiceProfile }),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -1204,9 +1231,9 @@ export default function Sidebar() {
     const currentRound = Math.floor(conversationRef.current.length / 2) + 1;
 
     try {
-      // v10: 拉取用户风格记忆 + 语义 few-shot + 反向样本 + LLM 抽取事实
+      // v11: 拉取用户风格记忆 + 语义 few-shot + 反向样本 + LLM 抽取事实 + 声音指纹
       const taskTypeForMemory = (detectedTask as string) || "general";
-      const { profile: userProfile, examples: topExamples, dislikes: userDislikes, facts: userFacts, queryEmbedding } = await loadUserMemory(taskTypeForMemory, currentInput);
+      const { profile: userProfile, examples: topExamples, dislikes: userDislikes, facts: userFacts, voiceProfile: userVoiceProfile, queryEmbedding } = await loadUserMemory(taskTypeForMemory, currentInput);
       const sampleN = Number(userProfile?.sample_count || 0);
       if (sampleN >= 3) {
         setMemoryHint(lang === "zh"
@@ -1216,7 +1243,13 @@ export default function Sidebar() {
         setMemoryHint("");
       }
 
-      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound, userProfile, topExamples, taskTypeForMemory, userDislikes, userFacts);
+      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound, userProfile, topExamples, taskTypeForMemory, userDislikes, userFacts, userVoiceProfile);
+
+      // v11 观测性: 把 worker 返回的 _debug.memory_applied 打到 console,方便用户/开发者看到个性化是否生效
+      if (data?._debug?.memory_applied) {
+        // eslint-disable-next-line no-console
+        console.log("[prompt.ai memory]", data._debug.memory_applied);
+      }
 
       if (data.diagnosis && data.diagnosis !== "已优化") {
         setDiagnosis(data.diagnosis.slice(0, 40));
