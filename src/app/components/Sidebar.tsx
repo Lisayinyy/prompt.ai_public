@@ -947,39 +947,43 @@ export default function Sidebar() {
   }
 
   // ─── v7.8: 用户级 × 任务级 风格记忆缓存（60s TTL）───────────
-  const memoryCacheRef = useRef<Map<string, { profile: any; dislikes: any[]; ts: number }>>(new Map());
+  const memoryCacheRef = useRef<Map<string, { profile: any; dislikes: any[]; facts: any[]; ts: number }>>(new Map());
   const MEMORY_TTL_MS = 60_000;
 
-  // v9: 拉取用户记忆 + 语义 few-shot
-  // - profile / dislikes: task-level，60s 缓存（不依赖 input）
+  // v10: 拉取用户记忆 + 语义 few-shot + LLM 抽取事实
+  // - profile / dislikes / facts: task-level，60s 缓存（不依赖 input）
   // - examples: input-level，每次现拉（语义检索 → fallback v8 score-based）
-  // - queryEmbedding: 当前 input 的 1536 维向量，optimize 完成后写回新 prompt 行
+  // - queryEmbedding: 当前 input 的 1024 维向量，optimize 完成后写回新 prompt 行
   async function loadUserMemory(
     taskType: string,
     currentInput?: string,
-  ): Promise<{ profile: any; examples: any[]; dislikes: any[]; queryEmbedding: number[] | null }> {
-    if (!user) return { profile: null, examples: [], dislikes: [], queryEmbedding: null };
+  ): Promise<{ profile: any; examples: any[]; dislikes: any[]; facts: any[]; queryEmbedding: number[] | null }> {
+    if (!user) return { profile: null, examples: [], dislikes: [], facts: [], queryEmbedding: null };
 
-    // ─ 第 1 路：profile + dislikes（task-level，可缓存）
+    // ─ 第 1 路：profile + dislikes + facts（task-level，可缓存）
     const cacheKey = `${user.id}::${taskType}`;
     const cached = memoryCacheRef.current.get(cacheKey);
     let profile: any = null;
     let dislikes: any[] = [];
+    let facts: any[] = [];
 
     if (cached && Date.now() - cached.ts < MEMORY_TTL_MS) {
       profile = cached.profile;
       dislikes = cached.dislikes;
+      facts = cached.facts;
     } else {
       try {
-        const [profileRes, dislikesRes] = await Promise.all([
+        const [profileRes, dislikesRes, factsRes] = await Promise.all([
           supabase.rpc("get_user_task_profile", { p_user_id: user.id, p_task_type: taskType }),
           supabase.rpc("get_user_recent_dislikes", { p_user_id: user.id, p_task_type: taskType, p_limit: 3 }),
+          supabase.rpc("get_user_facts", { p_user_id: user.id, p_task_type: taskType, p_limit: 8 }),
         ]);
         profile = (profileRes.data as any) || null;
         dislikes = Array.isArray(dislikesRes.data) ? dislikesRes.data : [];
-        memoryCacheRef.current.set(cacheKey, { profile, dislikes, ts: Date.now() });
+        facts = Array.isArray(factsRes.data) ? factsRes.data : [];
+        memoryCacheRef.current.set(cacheKey, { profile, dislikes, facts, ts: Date.now() });
       } catch {
-        // RPC 失败不致命，profile/dislikes 保持为空
+        // RPC 失败不致命，profile/dislikes/facts 保持为空
       }
     }
 
@@ -1011,7 +1015,7 @@ export default function Sidebar() {
     }
 
     if (examples.length === 0) {
-      // Fallback：要么 worker /embed 没配 OPENAI_API_KEY，要么用户还没 backfill embedding
+      // Fallback：要么 worker /embed 没配，要么用户还没 backfill embedding
       try {
         const fallbackRes = await supabase.rpc("get_top_user_prompts", {
           p_user_id: user.id,
@@ -1022,17 +1026,65 @@ export default function Sidebar() {
       } catch {}
     }
 
-    return { profile, examples, dislikes, queryEmbedding };
+    return { profile, examples, dislikes, facts, queryEmbedding };
   }
 
-  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general", userDislikes: any[] = []) {
+  // v10: fire-and-forget LLM 事实抽取
+  // 调用时机: 每次 optimize 成功后,异步检查"距离上次抽取累计 >= 10 条新 prompt"则触发
+  // 完成后清缓存,下次 optimize 立即用新事实
+  async function maybeExtractFacts() {
+    if (!user) return;
+    try {
+      const { data: state } = await supabase.rpc("get_extraction_state", { p_user_id: user.id });
+      const promptsSinceLast = Number(state?.prompts_since_last || 0);
+      if (promptsSinceLast < 10) return;
+
+      const { data: recent } = await supabase
+        .from("prompts")
+        .select("id, original_text, optimized_text, task_type")
+        .eq("user_id", user.id)
+        .not("optimized_text", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (!Array.isArray(recent) || recent.length === 0) return;
+
+      const res = await fetch(`${API_URL}/extract-facts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompts: recent.map((p: any) => ({
+            original_text: p.original_text,
+            optimized_text: p.optimized_text,
+            task_type: p.task_type || "general",
+          })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!Array.isArray(data?.facts) || data.facts.length === 0) return;
+
+      await supabase.rpc("add_user_facts", {
+        p_facts: data.facts,
+        p_source_prompt_ids: recent.map((p: any) => p.id),
+      });
+
+      // 清缓存,下次 loadUserMemory 拿新 facts
+      memoryCacheRef.current.clear();
+    } catch (e) {
+      // 完全不能阻塞 UI;失败静默
+      // eslint-disable-next-line no-console
+      console.warn("Fact extraction failed (non-fatal):", (e as Error)?.message);
+    }
+  }
+
+  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general", userDislikes: any[] = [], userFacts: any[] = []) {
     void round;
     const validHistory = messages.slice(-6).filter((m: any) => m.role && m.content);
 
     const res = await fetch(`${API_URL}/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType, userDislikes }),
+      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType, userDislikes, userFacts }),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -1152,9 +1204,9 @@ export default function Sidebar() {
     const currentRound = Math.floor(conversationRef.current.length / 2) + 1;
 
     try {
-      // v9: 拉取用户风格记忆 + 语义 few-shot + 反向样本
+      // v10: 拉取用户风格记忆 + 语义 few-shot + 反向样本 + LLM 抽取事实
       const taskTypeForMemory = (detectedTask as string) || "general";
-      const { profile: userProfile, examples: topExamples, dislikes: userDislikes, queryEmbedding } = await loadUserMemory(taskTypeForMemory, currentInput);
+      const { profile: userProfile, examples: topExamples, dislikes: userDislikes, facts: userFacts, queryEmbedding } = await loadUserMemory(taskTypeForMemory, currentInput);
       const sampleN = Number(userProfile?.sample_count || 0);
       if (sampleN >= 3) {
         setMemoryHint(lang === "zh"
@@ -1164,7 +1216,7 @@ export default function Sidebar() {
         setMemoryHint("");
       }
 
-      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound, userProfile, topExamples, taskTypeForMemory, userDislikes);
+      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound, userProfile, topExamples, taskTypeForMemory, userDislikes, userFacts);
 
       if (data.diagnosis && data.diagnosis !== "已优化") {
         setDiagnosis(data.diagnosis.slice(0, 40));
@@ -1216,6 +1268,9 @@ export default function Sidebar() {
                 p_embedding: queryEmbedding,
               }).then(() => {}).catch(() => {});
             }
+            // v10: fire-and-forget — 累计够 10 条新 prompt 就触发 LLM 事实抽取
+            // 不阻塞 UI,失败静默。新事实会在下次 loadUserMemory 时被拿到
+            maybeExtractFacts();
           }
         }).catch(() => {});
       }

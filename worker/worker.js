@@ -87,8 +87,23 @@ function buildUserDislikesBlock(userDislikes) {
   return `\n## STYLES TO AVOID (the user explicitly disliked these in the past)${safe}\nDo NOT replicate the structure, tone, or phrasing of these rejected outputs. The user clicked thumbs-down on them — they are anti-examples.`;
 }
 
+// v10: LLM 抽取出来的用户偏好事实 — 信息密度最高，放在 system prompt 末尾
+// userFacts shape: [{ fact, confidence, task_type }]
+function buildUserFactsBlock(userFacts) {
+  if (!Array.isArray(userFacts) || userFacts.length === 0) return "";
+  // 单条 ≤ 80 chars，整块预算 ~1000 chars (~10 facts)
+  const lines = userFacts.slice(0, 10).map((f, i) => {
+    const text = String(f?.fact || "").trim().slice(0, 300);
+    if (!text) return null;
+    const conf = typeof f?.confidence === "number" ? ` (conf=${f.confidence.toFixed(2)})` : "";
+    return `${i + 1}. ${text}${conf}`;
+  }).filter(Boolean).join("\n");
+  if (!lines) return "";
+  return `\n## USER PROFILE FACTS (extracted from past usage patterns — these are STABLE preferences)\n${lines}\nThese facts describe who the user IS and what they consistently prefer. Apply them to the optimized output unless the current input clearly overrides them.`;
+}
+
 // ─── 动态系统提示词（根据 targetAI 差异化）─────────────────
-function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general", userDislikes = null) {
+function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general", userDislikes = null, userFacts = null) {
   // 目标 AI 策略
   let targetStrategy = "";
 
@@ -134,17 +149,18 @@ Optimize for broad compatibility across all major AI systems.
   };
   const toneDesc = toneGuide[tone] || "balanced and clear";
 
-  // 个性化记忆：用户风格画像 + 历史高分示例 + 反向样本（v8.1）
+  // 个性化记忆：用户风格画像 + 历史高分示例 + 反向样本（v8.1）+ LLM 抽取事实（v10）
   const userProfileBlock = buildUserProfileBlock(userProfile, taskType);
   const examplesBlock = buildExamplesBlock(topExamples);
   const dislikesBlock = buildUserDislikesBlock(userDislikes);
+  const factsBlock = buildUserFactsBlock(userFacts);
 
   return `You are an elite Prompt Engineer with mastery of the world's best prompting frameworks. Your job: transform any rough user input into a high-quality, immediately usable prompt.
 ${targetStrategy}
 
 ## TONE REQUIREMENT
 Apply this tone to the optimized prompt: ${tone} — ${toneDesc}
-${userProfileBlock}${examplesBlock}${dislikesBlock}
+${userProfileBlock}${examplesBlock}${dislikesBlock}${factsBlock}
 
 ## YOUR OPTIMIZATION ENGINE
 
@@ -819,6 +835,120 @@ export default {
       }
     }
 
+    // ─── /extract-facts 路由 (v10)：从用户最近 N 条 prompt 抽 LLM 偏好事实 ──
+    // 调 MiniMax-M2.7 把"用户偏好"提炼成结构化 JSON 事实
+    // 前端拿到 facts 后通过 add_user_facts RPC 写入 user_facts 表
+    if (url.pathname === "/extract-facts") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const { prompts } = await request.json();
+        if (!Array.isArray(prompts) || prompts.length === 0) {
+          return new Response(JSON.stringify({ error: "prompts array required" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        // 上限 15 条，防止 token 爆炸
+        const sample = prompts.slice(0, 15).map((p, i) => {
+          const orig = String(p?.original_text || "").slice(0, 200);
+          const opt = String(p?.optimized_text || "").slice(0, 400);
+          const tt = String(p?.task_type || "general").slice(0, 30);
+          return `[${i + 1}] task=${tt}\n  raw: ${orig}\n  opt: ${opt}`;
+        }).join("\n\n");
+
+        const FACT_EXTRACTION_PROMPT = `You are a user-profile extraction expert. Your job: read a user's recent prompt-optimization records and extract STABLE PREFERENCES that should inform future optimizations.
+
+EXTRACT (high-signal preferences):
+- Professional identity ("用户是产品经理")
+- Style preferences ("偏好简洁输出，不超过200字")
+- Format preferences ("常用项目符号列表" / "偏好 Markdown 结构")
+- Domain vocabulary ("常用 KPI、OKR、sprint 等管理术语")
+- Audience patterns ("常给客户写正式邮件" / "对内沟通偏口语化")
+- Tone defaults ("整体语气专业但温和")
+- Task domain expertise ("精通技术文档写作")
+
+DO NOT EXTRACT (low-signal noise):
+- Single-incident phrasings (一次性的措辞，不能代表习惯)
+- Personal information (姓名、邮箱、电话、公司名)
+- Specific business secrets (产品代号、内部数字)
+- Content topics (这是 case-by-case，不是偏好)
+
+OUTPUT RULES:
+- Output ONLY a valid JSON array, no markdown, no explanation
+- Each fact: {"fact": "<chinese, 10-80 chars>", "confidence": <0.0-1.0>, "task_type": "<task name or null>"}
+- task_type=null 表示全局事实；非 null 表示仅当用户做该类任务时适用
+- Aim for 3-7 facts. QUALITY OVER QUANTITY.
+- Skip any fact with confidence < 0.5
+- Output Chinese (用户主语言)
+
+EXAMPLE OUTPUT:
+[
+  {"fact": "用户身份偏向产品经理或技术管理者", "confidence": 0.85, "task_type": null},
+  {"fact": "邮件类任务偏好正式、简洁、不超过200字", "confidence": 0.72, "task_type": "邮件"},
+  {"fact": "常用 KPI、OKR、sprint 等英文管理术语，混在中文里", "confidence": 0.68, "task_type": null}
+]`;
+
+        const userMsg = `以下是该用户最近 ${sample.split("\n\n").length} 条 prompt 优化记录。请提炼用户的稳定偏好，输出 JSON 数组：\n\n${sample}`;
+
+        const minimaxPayload = {
+          model: MODEL,
+          messages: [
+            { role: "system", content: FACT_EXTRACTION_PROMPT },
+            { role: "user", content: userMsg },
+          ],
+          temperature: 0.2,  // 抽取任务要稳，不要 creative
+          max_tokens: 1500,
+        };
+
+        const { response: apiResponse, lastErrorText, lastStatus } = await callMiniMaxWithRetry(env, minimaxPayload);
+
+        if (!apiResponse.ok) {
+          console.error("MiniMax extraction error:", lastStatus, lastErrorText);
+          return new Response(JSON.stringify({ error: "Extraction LLM failed", upstreamStatus: lastStatus }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        const data = await apiResponse.json();
+        const rawContent = data.choices?.[0]?.message?.content || "";
+        const cleaned = cleanModelOutput(rawContent);
+
+        let facts;
+        try {
+          facts = JSON.parse(cleaned);
+          if (!Array.isArray(facts)) throw new Error("not an array");
+        } catch (parseErr) {
+          console.error("Fact JSON parse failed:", cleaned.slice(0, 200));
+          return new Response(JSON.stringify({ error: "Failed to parse facts", raw: cleaned.slice(0, 300) }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        // 严格校验 + 清洗每条 fact
+        const validFacts = facts
+          .filter(f => f && typeof f.fact === "string" && f.fact.trim().length >= 5)
+          .map(f => ({
+            fact: String(f.fact).trim().slice(0, 300),
+            confidence: Math.max(0, Math.min(1, Number(f.confidence) || 0.6)),
+            task_type: typeof f.task_type === "string" && f.task_type.trim() ? String(f.task_type).trim().slice(0, 30) : null,
+          }))
+          .filter(f => f.confidence >= 0.5)
+          .slice(0, 10);  // hard cap
+
+        return new Response(JSON.stringify({ facts: validFacts, raw_count: facts.length }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Extract-facts error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,
@@ -827,7 +957,7 @@ export default {
     }
 
     try {
-      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false, userProfile = null, topExamples = null, taskType = "general", userDislikes = null } = await request.json();
+      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false, userProfile = null, topExamples = null, taskType = "general", userDislikes = null, userFacts = null } = await request.json();
 
       if (!prompt || !prompt.trim()) {
         return new Response(
@@ -850,8 +980,8 @@ export default {
         );
       }
 
-      // ─── 构建动态系统提示词（v8.1: 注入 user-task 风格记忆 + 反向样本）────
-      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType, userDislikes);
+      // ─── 构建动态系统提示词（v10: + LLM 抽取事实）────
+      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType, userDislikes, userFacts);
 
       // ─── 构建消息列表（支持多轮对话历史）────────────────────
       // 历史消息：最多保留最近 6 条，避免 token 过多
