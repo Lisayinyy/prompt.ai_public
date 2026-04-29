@@ -947,38 +947,92 @@ export default function Sidebar() {
   }
 
   // ─── v7.8: 用户级 × 任务级 风格记忆缓存（60s TTL）───────────
-  const memoryCacheRef = useRef<Map<string, { profile: any; examples: any[]; ts: number }>>(new Map());
+  const memoryCacheRef = useRef<Map<string, { profile: any; dislikes: any[]; ts: number }>>(new Map());
   const MEMORY_TTL_MS = 60_000;
 
-  async function loadUserMemory(taskType: string): Promise<{ profile: any; examples: any[] }> {
-    if (!user) return { profile: null, examples: [] };
+  // v9: 拉取用户记忆 + 语义 few-shot
+  // - profile / dislikes: task-level，60s 缓存（不依赖 input）
+  // - examples: input-level，每次现拉（语义检索 → fallback v8 score-based）
+  // - queryEmbedding: 当前 input 的 1536 维向量，optimize 完成后写回新 prompt 行
+  async function loadUserMemory(
+    taskType: string,
+    currentInput?: string,
+  ): Promise<{ profile: any; examples: any[]; dislikes: any[]; queryEmbedding: number[] | null }> {
+    if (!user) return { profile: null, examples: [], dislikes: [], queryEmbedding: null };
+
+    // ─ 第 1 路：profile + dislikes（task-level，可缓存）
     const cacheKey = `${user.id}::${taskType}`;
     const cached = memoryCacheRef.current.get(cacheKey);
+    let profile: any = null;
+    let dislikes: any[] = [];
+
     if (cached && Date.now() - cached.ts < MEMORY_TTL_MS) {
-      return { profile: cached.profile, examples: cached.examples };
+      profile = cached.profile;
+      dislikes = cached.dislikes;
+    } else {
+      try {
+        const [profileRes, dislikesRes] = await Promise.all([
+          supabase.rpc("get_user_task_profile", { p_user_id: user.id, p_task_type: taskType }),
+          supabase.rpc("get_user_recent_dislikes", { p_user_id: user.id, p_task_type: taskType, p_limit: 3 }),
+        ]);
+        profile = (profileRes.data as any) || null;
+        dislikes = Array.isArray(dislikesRes.data) ? dislikesRes.data : [];
+        memoryCacheRef.current.set(cacheKey, { profile, dislikes, ts: Date.now() });
+      } catch {
+        // RPC 失败不致命，profile/dislikes 保持为空
+      }
     }
-    try {
-      const [profileRes, examplesRes] = await Promise.all([
-        supabase.rpc("get_user_task_profile", { p_user_id: user.id, p_task_type: taskType }),
-        supabase.rpc("get_top_user_prompts", { p_user_id: user.id, p_task_type: taskType, p_limit: 2 }),
-      ]);
-      const profile = (profileRes.data as any) || null;
-      const examples = Array.isArray(examplesRes.data) ? examplesRes.data : [];
-      memoryCacheRef.current.set(cacheKey, { profile, examples, ts: Date.now() });
-      return { profile, examples };
-    } catch {
-      return { profile: null, examples: [] };
+
+    // ─ 第 2 路：examples（v9 语义检索 → fallback v8 score-based）
+    let examples: any[] = [];
+    let queryEmbedding: number[] | null = null;
+
+    if (currentInput && currentInput.trim()) {
+      try {
+        const embedRes = await fetch(`${API_URL}/embed`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: currentInput.slice(0, 4000) }),
+        });
+        const embedData = await embedRes.json().catch(() => ({}));
+        if (Array.isArray(embedData?.embedding) && embedData.embedding.length === 1024) {
+          queryEmbedding = embedData.embedding;
+          const semanticRes = await supabase.rpc("get_top_user_prompts_semantic", {
+            p_user_id: user.id,
+            p_task_type: taskType,
+            p_query_embedding: queryEmbedding,
+            p_limit: 2,
+          });
+          examples = Array.isArray(semanticRes.data) ? semanticRes.data : [];
+        }
+      } catch {
+        // 语义路径失败 → 兜底走 v8
+      }
     }
+
+    if (examples.length === 0) {
+      // Fallback：要么 worker /embed 没配 OPENAI_API_KEY，要么用户还没 backfill embedding
+      try {
+        const fallbackRes = await supabase.rpc("get_top_user_prompts", {
+          p_user_id: user.id,
+          p_task_type: taskType,
+          p_limit: 2,
+        });
+        examples = Array.isArray(fallbackRes.data) ? fallbackRes.data : [];
+      } catch {}
+    }
+
+    return { profile, examples, dislikes, queryEmbedding };
   }
 
-  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general") {
+  async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general", userDislikes: any[] = []) {
     void round;
     const validHistory = messages.slice(-6).filter((m: any) => m.role && m.content);
 
     const res = await fetch(`${API_URL}/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType }),
+      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType, userDislikes }),
     });
 
     const data = await res.json().catch(() => ({}));
@@ -1098,9 +1152,9 @@ export default function Sidebar() {
     const currentRound = Math.floor(conversationRef.current.length / 2) + 1;
 
     try {
-      // v7.8: 拉取用户风格记忆 + 历史高分示例
+      // v9: 拉取用户风格记忆 + 语义 few-shot + 反向样本
       const taskTypeForMemory = (detectedTask as string) || "general";
-      const { profile: userProfile, examples: topExamples } = await loadUserMemory(taskTypeForMemory);
+      const { profile: userProfile, examples: topExamples, dislikes: userDislikes, queryEmbedding } = await loadUserMemory(taskTypeForMemory, currentInput);
       const sampleN = Number(userProfile?.sample_count || 0);
       if (sampleN >= 3) {
         setMemoryHint(lang === "zh"
@@ -1110,7 +1164,7 @@ export default function Sidebar() {
         setMemoryHint("");
       }
 
-      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound, userProfile, topExamples, taskTypeForMemory);
+      const data = await callMiniMaxDirect(currentInput, selectedTarget, selectedTone, historyMessages, false, currentRound, userProfile, topExamples, taskTypeForMemory, userDislikes);
 
       if (data.diagnosis && data.diagnosis !== "已优化") {
         setDiagnosis(data.diagnosis.slice(0, 40));
@@ -1153,7 +1207,16 @@ export default function Sidebar() {
           task_type: detectedTask || "general",
           ...scoreData,
         }).select("id").single().then(({ data: row }) => {
-          if (row?.id) lastPromptIdRef.current = row.id;
+          if (row?.id) {
+            lastPromptIdRef.current = row.id;
+            // v9: 把刚算出的 query embedding 写回这条新 prompt，让未来的语义检索能找到它
+            if (queryEmbedding) {
+              supabase.rpc("set_prompt_embedding", {
+                p_prompt_id: row.id,
+                p_embedding: queryEmbedding,
+              }).then(() => {}).catch(() => {});
+            }
+          }
         }).catch(() => {});
       }
       // 优化成功计数

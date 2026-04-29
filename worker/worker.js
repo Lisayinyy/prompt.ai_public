@@ -73,8 +73,22 @@ function buildExamplesBlock(topExamples) {
   return `\n## REFERENCE EXAMPLES${safe}\nMatch the structure and style of these past examples when sensible.`;
 }
 
+// v8.1: 反向样本 — 用户曾明确点踩的优化，告诉 LLM 不要复制这种风格
+// userDislikes shape: [{ original_text, optimized_text, disliked_at }]
+function buildUserDislikesBlock(userDislikes) {
+  if (!Array.isArray(userDislikes) || userDislikes.length === 0) return "";
+  // 单条裁剪到 ~400 chars，整块预算 ~1000 chars
+  const safe = userDislikes.slice(0, 3).map((ex, i) => {
+    const raw = String(ex.original_text || "").slice(0, 150);
+    const opt = String(ex.optimized_text || "").slice(0, 400);
+    return `\nRejected ${i + 1}:\n  input: ${raw}\n  user-disliked output: ${opt}`;
+  }).join("");
+  if (!safe) return "";
+  return `\n## STYLES TO AVOID (the user explicitly disliked these in the past)${safe}\nDo NOT replicate the structure, tone, or phrasing of these rejected outputs. The user clicked thumbs-down on them — they are anti-examples.`;
+}
+
 // ─── 动态系统提示词（根据 targetAI 差异化）─────────────────
-function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general") {
+function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general", userDislikes = null) {
   // 目标 AI 策略
   let targetStrategy = "";
 
@@ -120,16 +134,17 @@ Optimize for broad compatibility across all major AI systems.
   };
   const toneDesc = toneGuide[tone] || "balanced and clear";
 
-  // 个性化记忆：用户风格画像 + 历史高分示例
+  // 个性化记忆：用户风格画像 + 历史高分示例 + 反向样本（v8.1）
   const userProfileBlock = buildUserProfileBlock(userProfile, taskType);
   const examplesBlock = buildExamplesBlock(topExamples);
+  const dislikesBlock = buildUserDislikesBlock(userDislikes);
 
   return `You are an elite Prompt Engineer with mastery of the world's best prompting frameworks. Your job: transform any rough user input into a high-quality, immediately usable prompt.
 ${targetStrategy}
 
 ## TONE REQUIREMENT
 Apply this tone to the optimized prompt: ${tone} — ${toneDesc}
-${userProfileBlock}${examplesBlock}
+${userProfileBlock}${examplesBlock}${dislikesBlock}
 
 ## YOUR OPTIMIZATION ENGINE
 
@@ -751,6 +766,59 @@ export default {
       }
     }
 
+    // ─── /embed 路由 (v9)：用 Cloudflare Workers AI 跑 bge-m3 拿向量 ───────
+    // 前端在 optimize 前先调一次拿到 query embedding，用于：
+    //   1) 调 get_top_user_prompts_semantic 做语义 few-shot 检索
+    //   2) optimize 完成后，写回 prompts.embedding 列（避免再算一遍）
+    // 模型 @cf/baai/bge-m3：1024 维，多语言（中文友好），免费额度 10k neurons/day
+    if (url.pathname === "/embed") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        if (!env.AI) {
+          return new Response(JSON.stringify({ error: "AI binding not configured (check wrangler.toml [ai] block)" }), {
+            status: 503, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        const { text } = await request.json();
+        const cleaned = String(text || "").trim();
+        if (!cleaned) {
+          return new Response(JSON.stringify({ error: "text is required" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        // bge-m3 input cap: ~8192 tokens; conservatively cap chars
+        const result = await env.AI.run("@cf/baai/bge-m3", {
+          text: [cleaned.slice(0, 4000)],
+        });
+
+        // Workers AI bge-m3 response shape: { shape: [1, 1024], data: [[...1024]], pooling: "cls" }
+        const embedding = Array.isArray(result?.data) && Array.isArray(result.data[0])
+          ? result.data[0]
+          : null;
+
+        if (!embedding || embedding.length !== 1024) {
+          console.error("Malformed bge-m3 response:", JSON.stringify(result).slice(0, 300));
+          return new Response(JSON.stringify({ error: "Malformed embedding response" }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ embedding }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Embed error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,
@@ -759,7 +827,7 @@ export default {
     }
 
     try {
-      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false, userProfile = null, topExamples = null, taskType = "general" } = await request.json();
+      const { prompt, targetAI = "any", tone = "Professional", lang = "zh", messages = [], isRefinement = false, userProfile = null, topExamples = null, taskType = "general", userDislikes = null } = await request.json();
 
       if (!prompt || !prompt.trim()) {
         return new Response(
@@ -782,8 +850,8 @@ export default {
         );
       }
 
-      // ─── 构建动态系统提示词（v7.8: 注入 user-task 风格记忆）────
-      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType);
+      // ─── 构建动态系统提示词（v8.1: 注入 user-task 风格记忆 + 反向样本）────
+      const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType, userDislikes);
 
       // ─── 构建消息列表（支持多轮对话历史）────────────────────
       // 历史消息：最多保留最近 6 条，避免 token 过多

@@ -10,6 +10,11 @@ compatibility_date = "2024-01-01"
 # API Key 通过 secret 设置，不写在代码里：
 # npx wrangler secret put MINIMAX_API_KEY
 
+# v9: Cloudflare Workers AI binding (用于 /embed endpoint 调 bge-m3)
+# 免费额度 10k neurons/day，bge-m3 单次 embedding 约 1 neuron
+[ai]
+binding = "AI"
+
 # Smart Placement: 让 Worker 在靠近 MiniMax API 的节点运行
 [placement]
 mode = "smart"
