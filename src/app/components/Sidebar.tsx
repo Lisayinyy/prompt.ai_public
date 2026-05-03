@@ -767,11 +767,13 @@ export default function Sidebar() {
     platform: string | null;
     tone: string | null;
     task_type?: string | null;
-    source?: string | null;     // v24: optimize / silent_capture / manual
+    source?: string | null;
+    is_starred?: boolean | null;     // v26
+    project_id?: string | null;      // v26
     score_clarity?: number | null;
     score_specificity?: number | null;
     score_structure?: number | null;
-    similarity?: number | null; // v24: 语义相似度 0-1
+    similarity?: number | null;
     created_at: string;
   };
   const [realHistory, setRealHistory] = useState<PromptRecord[]>([]);
@@ -781,7 +783,61 @@ export default function Sidebar() {
   const [searchPlatforms, setSearchPlatforms] = useState<string[]>([]);
   const [searchTaskTypes, setSearchTaskTypes] = useState<string[]>([]);
   const [searchDays, setSearchDays] = useState<number>(90);
+  const [searchOnlyStarred, setSearchOnlyStarred] = useState<boolean>(false); // v26
   const [facets, setFacets] = useState<{ platforms: { value: string; count: number }[]; task_types: { value: string; count: number }[] }>({ platforms: [], task_types: [] });
+  // v26: 用户项目缓存 + 当前 optimize 的星标/项目状态
+  const [userProjects, setUserProjects] = useState<Array<{ id: string; name: string; color: string | null }>>([]);
+  const [optimizedIsStarred, setOptimizedIsStarred] = useState<boolean>(false);
+  const [showProjectMenu, setShowProjectMenu] = useState<boolean>(false);
+  const [assignToast, setAssignToast] = useState<string>("");
+
+  // v26: 加载用户项目列表 (供 optimize "加入项目" dropdown 用)
+  const loadUserProjects = useCallback(async () => {
+    if (!user) return;
+    try {
+      const { data } = await supabase.rpc("list_user_projects", { p_user_id: user.id });
+      if (Array.isArray(data)) {
+        setUserProjects(data.map((p: any) => ({ id: p.id, name: p.name, color: p.color })));
+      }
+    } catch {}
+  }, [user]);
+
+  // v26: 切到 optimize tab / 登录时加载项目列表
+  useEffect(() => {
+    if (isLoggedIn) loadUserProjects();
+  }, [isLoggedIn, loadUserProjects]);
+
+  // v26: 切换 optimize 结果的星标
+  const toggleOptimizedStar = async () => {
+    if (!lastPromptIdRef.current) return;
+    try {
+      const { data } = await supabase.rpc("toggle_prompt_star", { p_prompt_id: lastPromptIdRef.current });
+      setOptimizedIsStarred(!!data);
+    } catch {}
+  };
+
+  // v26: 把 optimize 结果归到某项目 (project_id null = 移出)
+  const assignOptimizedToProject = async (projectId: string | null, projectName?: string) => {
+    if (!lastPromptIdRef.current) {
+      setAssignToast("⚠ 还没保存到云端,稍等 1 秒再试");
+      setTimeout(() => setAssignToast(""), 2500);
+      return;
+    }
+    try {
+      await supabase.rpc("assign_prompt_to_project", {
+        p_prompt_id: lastPromptIdRef.current,
+        p_project_id: projectId,
+      });
+      setShowProjectMenu(false);
+      setAssignToast(projectId ? `✓ 已加入「${projectName || "项目"}」` : "✓ 已移出项目");
+      setTimeout(() => setAssignToast(""), 3000);
+      // 刷新项目列表 (项目计数变了)
+      loadUserProjects();
+    } catch (e) {
+      setAssignToast(`✗ ${(e as Error)?.message || "失败"}`);
+      setTimeout(() => setAssignToast(""), 3000);
+    }
+  };
 
   // v24: 调用新 search RPC (替代旧的 supabase.from('prompts').select)
   const runSearch = async () => {
@@ -815,6 +871,8 @@ export default function Sidebar() {
       p_task_types: searchTaskTypes.length > 0 ? searchTaskTypes : null,
       p_days: searchDays,
       p_limit: 50,
+      p_only_starred: searchOnlyStarred,
+      p_project_id: null,
     });
     if (!error && data) setRealHistory(data as PromptRecord[]);
     setHistoryLoading(false);
@@ -848,7 +906,7 @@ export default function Sidebar() {
     }, 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoggedIn, activeTab, historySearch, searchPlatforms, searchTaskTypes, searchDays]);
+  }, [isLoggedIn, activeTab, historySearch, searchPlatforms, searchTaskTypes, searchDays, searchOnlyStarred]);
 
   const deleteHistory = async (id: string) => {
     await supabase.from("prompts").delete().eq("id", id);
@@ -1299,6 +1357,9 @@ export default function Sidebar() {
     setDiagnosis("");
     setScores(null);
     setTips([]);
+    setOptimizedIsStarred(false); // v26: 新优化清星标
+    setShowProjectMenu(false);
+    setAssignToast("");
 
     const currentInput = inputText.trim();
 
@@ -2395,6 +2456,83 @@ export default function Sidebar() {
                           {optimizedText}
                         </div>
                       </div>
+                      {/* v26: ⭐ 收藏 + 📁 加入项目 */}
+                      {user && (
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={toggleOptimizedStar}
+                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] border transition-colors ${
+                              optimizedIsStarred
+                                ? "bg-[#fff7e0] text-[#a06a08] border-[#fbbf24]"
+                                : "bg-white text-[#8b8b9e] border-[#e0e0e6] hover:border-[#fbbf24]"
+                            }`}
+                            title="收藏供未来检索"
+                          >
+                            {optimizedIsStarred ? "⭐ 已收藏" : "☆ 收藏"}
+                          </button>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() => setShowProjectMenu(v => !v)}
+                              className="inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[10.5px] bg-white text-[#3a3a45] border border-[#e0e0e6] hover:border-[#7c3aed] hover:bg-[#faf7ff] transition-colors"
+                              title="把这条 prompt 归类到一个项目"
+                            >
+                              📁 加入项目 ▾
+                            </button>
+                            {showProjectMenu && (
+                              <>
+                                <div className="fixed inset-0 z-10" onClick={() => setShowProjectMenu(false)} />
+                                <div className="absolute z-20 top-full mt-1 left-0 bg-white border border-zinc-200 rounded-md shadow-lg min-w-[200px] max-h-[260px] overflow-y-auto">
+                                  {userProjects.length === 0 ? (
+                                    <div className="p-3 text-[11.5px] text-zinc-500 leading-relaxed">
+                                      还没有项目<br />
+                                      <button
+                                        type="button"
+                                        onClick={() => { setActiveTab("projects"); setShowProjectMenu(false); }}
+                                        className="text-[#7c3aed] hover:underline mt-1"
+                                      >
+                                        去 📁 项目 tab 创建第一个 →
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      {userProjects.map(p => (
+                                        <button
+                                          key={p.id}
+                                          type="button"
+                                          onClick={() => assignOptimizedToProject(p.id, p.name)}
+                                          className="w-full text-left flex items-center gap-2 px-3 py-1.5 text-[12px] text-zinc-700 hover:bg-zinc-50"
+                                        >
+                                          <span
+                                            className="w-2 h-2 rounded-full flex-shrink-0"
+                                            style={{ background: p.color || "#7c3aed" }}
+                                          />
+                                          <span className="truncate">{p.name}</span>
+                                        </button>
+                                      ))}
+                                      <div className="border-t border-zinc-100 px-3 py-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => { setActiveTab("projects"); setShowProjectMenu(false); }}
+                                          className="text-[11px] text-[#7c3aed] hover:underline"
+                                        >
+                                          + 新建项目
+                                        </button>
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                          {assignToast && (
+                            <span className={`text-[10.5px] ${assignToast.startsWith("✓") ? "text-green-600" : "text-amber-600"}`}>
+                              {assignToast}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     <div className="flex items-center gap-3 mt-3">
                       {[
                         {
@@ -2730,6 +2868,17 @@ export default function Sidebar() {
                         {opt.label}
                       </button>
                     ))}
+                    {/* v26: 仅收藏 toggle */}
+                    <button
+                      onClick={() => setSearchOnlyStarred(v => !v)}
+                      className={`px-2 py-0.5 text-[10.5px] rounded-full border transition-colors ${
+                        searchOnlyStarred
+                          ? "bg-[#fbbf24] text-white border-[#fbbf24]"
+                          : "bg-white text-[#6f6682] border-[#e7e1ef] hover:border-[#fbbf24]"
+                      }`}
+                    >
+                      ⭐ 仅收藏
+                    </button>
                   </div>
                   {facets.platforms.length > 0 && (
                     <div className="flex items-center gap-1.5 mb-3 flex-wrap">
