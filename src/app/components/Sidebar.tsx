@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { MemoryPanel } from "./MemoryPanel";
+import { OnboardingCard } from "./OnboardingCard";
 import {
   PieChart,
   Pie,
@@ -596,11 +597,21 @@ export default function Sidebar() {
       setIsLoggedIn(!!session);
       setUser(session?.user ?? null);
       syncToStorage(session);
+      // v23: 登录用户首次进入 → 弹 onboarding (localStorage 标记 dismiss 后不再弹)
+      if (session?.user && typeof window !== "undefined") {
+        const done = window.localStorage.getItem("promptai_onboarded");
+        if (!done) setOnboardingOpen(true);
+      }
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setIsLoggedIn(!!session);
       setUser(session?.user ?? null);
       syncToStorage(session);
+      // v23: 新登录用户也触发 onboarding (注册后第一次)
+      if (session?.user && typeof window !== "undefined") {
+        const done = window.localStorage.getItem("promptai_onboarded");
+        if (!done) setOnboardingOpen(true);
+      }
     });
     return () => subscription.unsubscribe();
   }, []);
@@ -893,6 +904,7 @@ export default function Sidebar() {
   const [showContext, setShowContext] = useState(false); // 上下文预览面板
   const [memoryHint, setMemoryHint] = useState<string>(""); // v7.8: "已记住 N 条该任务历史"
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false); // v12: L7 透明面板
+  const [onboardingOpen, setOnboardingOpen] = useState(false); // v23: 首次体验引导
 
   // 语义相似度检测（简单关键词重叠，不调 API）
   const isSameTopic = (a: string, b: string): boolean => {
@@ -2223,6 +2235,12 @@ export default function Sidebar() {
                       onClose={() => setMemoryPanelOpen(false)}
                       user={user}
                       onForceExtract={() => maybeExtractFacts({ force: true })}
+                    />
+
+                    {/* v23: Onboarding 首次体验引导 (Dialog Portal,首次登录后自动弹一次) */}
+                    <OnboardingCard
+                      open={onboardingOpen}
+                      onClose={() => setOnboardingOpen(false)}
                     />
 
                     {/* Diagnosis card */}
