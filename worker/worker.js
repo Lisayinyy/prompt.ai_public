@@ -1068,6 +1068,144 @@ OUTPUT: ONLY the voice profile paragraph itself. No JSON, no markdown wrapper, n
       }
     }
 
+    // ─── /translate-style 路由 (v16): 把 prompt 转成另一个 AI 平台的最佳风格 ──
+    // 比赛级演示功能: "把这条 ChatGPT 风格 prompt 转成 Claude 风格"
+    // 4 平台 style guides 显式区分,LLM 输出适配后的版本
+    if (url.pathname === "/translate-style") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const { prompt, target_platform } = await request.json();
+        const cleaned = String(prompt || "").trim();
+        if (!cleaned || cleaned.length < 5) {
+          return new Response(JSON.stringify({ error: "prompt is required" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        if (cleaned.length > 6000) {
+          return new Response(JSON.stringify({ error: "prompt too long" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        const STYLE_GUIDES = {
+          chatgpt: {
+            name: "ChatGPT (OpenAI)",
+            guide: `ChatGPT-optimized style:
+- Use Markdown structure: ## headers, bullet/numbered lists, **bold** for emphasis
+- Clear role assignment ("You are a senior...")
+- Step-by-step instructions when applicable
+- Explicit output format with examples
+- Code blocks for technical content
+- Direct, concise tone — no excessive politeness`,
+          },
+          claude: {
+            name: "Claude (Anthropic)",
+            guide: `Claude-optimized style:
+- Use XML tag structure: <context>, <task>, <constraints>, <format>, <examples>
+- Provide rich context up front — Claude excels with long-form input
+- Be explicit and precise about requirements (Claude follows literally)
+- Use thinking tags <thinking>...</thinking> for multi-step reasoning
+- Nuanced/sophisticated language tolerated and useful
+- For complex tasks: structure with clear sequential phases`,
+          },
+          gemini: {
+            name: "Gemini (Google)",
+            guide: `Gemini-optimized style:
+- Use clear sequential structure with numbered steps
+- Moderate use of Markdown — headers + bullets, less XML
+- Multimodal hints when applicable (image/code/table contexts)
+- Concrete examples drive Gemini better than abstract instructions
+- Specify exact output format (JSON / table / list / prose)
+- Include "Be concise but complete" type guidance`,
+          },
+          kimi: {
+            name: "Kimi (月之暗面)",
+            guide: `Kimi-optimized style (Chinese-first):
+- 中文优先输出,除非用户明确需要英文
+- 简洁直接,避免过度工程化的西式 prompt 结构
+- 用简单数字编号列表,少用复杂 Markdown 或 XML
+- 中文文化/行业背景能显著提升结果质量
+- Kimi 长上下文友好,可以塞较多背景资料
+- 角色 + 任务 + 输出格式三段式即可,无需冗长框架`,
+          },
+        };
+
+        const targetKey = String(target_platform || "").toLowerCase();
+        const targetCfg = STYLE_GUIDES[targetKey];
+        if (!targetCfg) {
+          return new Response(JSON.stringify({
+            error: "Invalid target_platform",
+            supported: Object.keys(STYLE_GUIDES),
+          }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        const TRANSLATE_SYSTEM_PROMPT = `You are a "prompt style translator". Your job: take a prompt that may have been written for one AI platform, and re-express it in the optimal style for the target platform — WITHOUT changing the user's intent.
+
+CRITICAL RULES:
+1. Preserve the user's CORE INTENT exactly — don't add new requirements, don't remove user-specified constraints
+2. Adapt ONLY the structure, formatting, vocabulary patterns to fit the target platform
+3. Output ONLY the translated prompt itself — no preamble, no explanation, no "Here's the translation:"
+4. Keep the same language as input (English in → English out, Chinese in → Chinese out)
+5. Keep similar length unless target style demands different (Kimi tends shorter, Claude tends longer for complex tasks)
+
+TARGET PLATFORM: ${targetCfg.name}
+
+${targetCfg.guide}
+
+Now translate the user's prompt to this target platform's optimal style. Output ONLY the new prompt.`;
+
+        const minimaxPayload = {
+          model: MODEL,
+          messages: [
+            { role: "system", content: TRANSLATE_SYSTEM_PROMPT },
+            { role: "user", content: cleaned },
+          ],
+          temperature: 0.5,  // 需要一点创造性来重新表达,但不能漂移意图
+          max_tokens: 2000,
+        };
+
+        const { response: apiResponse, lastErrorText, lastStatus } = await callMiniMaxWithRetry(env, minimaxPayload);
+
+        if (!apiResponse.ok) {
+          console.error("MiniMax translate-style error:", lastStatus, lastErrorText);
+          return new Response(JSON.stringify({ error: "Translation LLM failed", upstreamStatus: lastStatus }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        const data = await apiResponse.json();
+        const rawContent = data.choices?.[0]?.message?.content || "";
+        const translated = cleanModelOutput(rawContent).trim();
+
+        if (!translated || translated.length < 5) {
+          return new Response(JSON.stringify({ error: "Empty translation result" }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({
+          translated,
+          target_platform: targetKey,
+          target_name: targetCfg.name,
+          original_length: cleaned.length,
+          translated_length: translated.length,
+        }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Translate-style error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,

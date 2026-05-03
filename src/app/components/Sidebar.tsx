@@ -550,6 +550,10 @@ export default function Sidebar() {
   const [optimizedText, setOptimizedText] = useState("");
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [copied, setCopied] = useState(false);
+  // v16: 跨平台 prompt 翻译状态
+  const [savedOriginal, setSavedOriginal] = useState<string | null>(null);
+  const [currentStyle, setCurrentStyle] = useState<string | null>(null);
+  const [translateLoading, setTranslateLoading] = useState<string | null>(null); // 用 target 名做 loading 标记
   const [addContext, setAddContext] = useState(true);
   const [addExamples, setAddExamples] = useState(false);
   const [autoOptimize, setAutoOptimize] = useState(false);
@@ -1121,6 +1125,47 @@ export default function Sidebar() {
     }
   }
 
+  // v16: 跨平台 prompt 翻译 — 把当前 optimizedText 转成另一个 AI 平台的最佳风格
+  async function handleTranslateStyle(target: string) {
+    if (!optimizedText || translateLoading) return;
+    // 始终基于"原始 optimized 文本"做翻译,允许用户切换不同平台风格而不累积漂移
+    const sourceText = savedOriginal || optimizedText;
+    if (!savedOriginal) setSavedOriginal(optimizedText);
+
+    setTranslateLoading(target);
+    try {
+      const res = await fetch(`${API_URL}/translate-style`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: sourceText, target_platform: target }),
+      });
+      const data = await res.json();
+      if (data?.translated && typeof data.translated === "string") {
+        setOptimizedText(data.translated);
+        setCurrentStyle(target);
+      }
+    } catch {
+      // 静默失败,保留原文
+    } finally {
+      setTranslateLoading(null);
+    }
+  }
+
+  function handleRevertTranslate() {
+    if (savedOriginal) {
+      setOptimizedText(savedOriginal);
+      setSavedOriginal(null);
+      setCurrentStyle(null);
+    }
+  }
+
+  // v16: 当 optimize 重新触发时,清掉之前的翻译状态
+  function resetTranslateState() {
+    setSavedOriginal(null);
+    setCurrentStyle(null);
+    setTranslateLoading(null);
+  }
+
   async function callMiniMaxDirect(prompt: string, targetAI: string, tone: string, messages: any[] = [], isRefinement = false, round = 1, userProfile: any = null, topExamples: any[] = [], taskType: string = "general", userDislikes: any[] = [], userFacts: any[] = [], userVoiceProfile: string | null = null) {
     void round;
     const validHistory = messages.slice(-6).filter((m: any) => m.role && m.content);
@@ -1234,6 +1279,7 @@ export default function Sidebar() {
     setDiagnosis("");
     setScores(null);
     setTips([]);
+    resetTranslateState(); // v16: 新 optimize 清空翻译状态
 
     const currentInput = inputText.trim();
 
@@ -2311,18 +2357,59 @@ export default function Sidebar() {
 
                       </div>
                     </div>
-                    <div className="text-[10.5px] text-[#8b8b9e] uppercase tracking-[0.3px] mb-1.5" style={{ fontWeight: 600 }}>
-                      {t("readyToUse")}
-                    </div>
-                    <div className="relative">
-                      <div className="absolute top-0 left-0 w-[3px] h-full bg-[#18181b] rounded-full" />
-                      <div
-                        className="pl-4 pr-3 py-3 bg-[#fafafa] rounded-lg border border-[#e8e8ec] text-[13px] text-[#2a2a30] whitespace-pre-wrap max-h-[200px] overflow-y-auto"
-                        style={{ lineHeight: "1.65" }}
-                      >
-                        {optimizedText}
+                      <div className="text-[10.5px] text-[#8b8b9e] uppercase tracking-[0.3px] mb-1.5" style={{ fontWeight: 600 }}>
+                        {currentStyle ? `已转为 ${currentStyle.toUpperCase()} 风格` : t("readyToUse")}
                       </div>
-                    </div>
+                      <div className="relative">
+                        <div className="absolute top-0 left-0 w-[3px] h-full bg-[#18181b] rounded-full" />
+                        <div
+                          className="pl-4 pr-3 py-3 bg-[#fafafa] rounded-lg border border-[#e8e8ec] text-[13px] text-[#2a2a30] whitespace-pre-wrap max-h-[200px] overflow-y-auto"
+                          style={{ lineHeight: "1.65" }}
+                        >
+                          {optimizedText}
+                        </div>
+                      </div>
+                      {/* v16: 跨平台风格翻译 */}
+                      <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] text-[#8b8b9e] mr-0.5">🔁 转风格:</span>
+                        {[
+                          { code: "chatgpt", label: "ChatGPT", emoji: "💚" },
+                          { code: "claude",  label: "Claude",  emoji: "🧡" },
+                          { code: "gemini",  label: "Gemini",  emoji: "💎" },
+                          { code: "kimi",    label: "Kimi",    emoji: "🌙" },
+                        ].map((p) => {
+                          const isLoading = translateLoading === p.code;
+                          const isActive = currentStyle === p.code;
+                          return (
+                            <button
+                              key={p.code}
+                              type="button"
+                              onClick={() => handleTranslateStyle(p.code)}
+                              disabled={!!translateLoading}
+                              className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[10.5px] transition-all border ${
+                                isActive
+                                  ? "bg-[#18181b] text-white border-[#18181b]"
+                                  : "bg-white text-[#3a3a45] border-[#e0e0e6] hover:border-[#7c3aed] hover:bg-[#faf7ff]"
+                              } ${translateLoading && !isLoading ? "opacity-40" : ""} ${isLoading ? "opacity-70" : ""} disabled:cursor-not-allowed`}
+                              title={`转成 ${p.label} 平台风格`}
+                            >
+                              <span>{p.emoji}</span>
+                              <span style={{ fontWeight: 500 }}>{isLoading ? "..." : p.label}</span>
+                            </button>
+                          );
+                        })}
+                        {savedOriginal && (
+                          <button
+                            type="button"
+                            onClick={handleRevertTranslate}
+                            disabled={!!translateLoading}
+                            className="inline-flex items-center px-2 py-1 rounded-md text-[10.5px] bg-white text-[#71717a] border border-[#e0e0e6] hover:border-[#71717a] transition-all"
+                            title="还原到优化后原文"
+                          >
+                            ↩ 还原
+                          </button>
+                        )}
+                      </div>
                     <div className="flex items-center gap-3 mt-3">
                       {[
                         {

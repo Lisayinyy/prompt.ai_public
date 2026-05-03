@@ -89,6 +89,7 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   const [sourceBreakdown, setSourceBreakdown] = useState<{ optimize: number; silent_capture: number; manual: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [captureEnabled, setCaptureEnabled] = useState<boolean>(true);
+  const [shareMode, setShareMode] = useState<boolean>(false); // v17: 截图分享模式
 
   // chrome.storage 同步 captureEnabled
   useEffect(() => {
@@ -209,10 +210,10 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { setShareMode(false); onClose(); } }}>
       <DialogContent className="max-w-[680px] max-h-[92vh] overflow-y-auto p-0 gap-0">
         {/* ─── HEADER ──────────────────────────────────────── */}
-        <DialogHeader className="px-5 pt-5 pb-3 border-b border-zinc-100">
+        <DialogHeader className={`px-5 pt-5 pb-3 border-b border-zinc-100 ${shareMode ? "hidden" : ""}`}>
           <DialogTitle className="flex items-center gap-2 text-base">
             <span>🧠</span>
             <span>我的 AI 记忆</span>
@@ -221,6 +222,16 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
             prompt.ai 在 22 个 AI 平台学到的你 — 跨平台、可控、属于你
           </DialogDescription>
         </DialogHeader>
+
+        {/* v17: Share Mode 顶部品牌头 (替代普通 header) */}
+        {shareMode && (
+          <div className="px-5 pt-5 pb-3 text-center bg-gradient-to-b from-[#faf7ff] to-white">
+            <div className="text-[11px] text-zinc-500 mb-1">我的 AI 记忆 · powered by</div>
+            <div className="font-bold text-lg" style={{ fontFamily: "Georgia, serif" }}>
+              prompt<span className="text-[#7c3aed]">.</span>ai
+            </div>
+          </div>
+        )}
 
         {!user ? (
           <div className="py-12 text-center text-sm text-zinc-500 px-5">
@@ -425,7 +436,7 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.35, delay: 0.15 }}
-              className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 space-y-2.5"
+              className={`rounded-lg border border-zinc-200 bg-zinc-50 p-3 space-y-2.5 ${shareMode ? "hidden" : ""}`}
             >
               <h3 className="text-sm font-semibold text-zinc-900 flex items-center gap-1.5">
                 <span>⚙️</span> <span>设置</span>
@@ -460,15 +471,53 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               >
                 {refreshing ? "🪄 生成中..." : "🪄 重新生成画像 (跳过 10 条阈值)"}
               </Button>
+
+              {/* v17: 分享按钮 */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShareMode(true)}
+                className="w-full text-xs h-8 border-[#e0d3f9] hover:bg-[#faf7ff]"
+              >
+                📸 进入截图分享模式
+              </Button>
             </motion.section>
+
+            {/* v17: Share Mode 水印 (在 share mode 下显示在内容底部) */}
+            {shareMode && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.4 }}
+                className="text-center pt-2 pb-1 border-t border-dashed border-zinc-200"
+              >
+                <div className="text-[10px] text-zinc-400">
+                  生成于 prompt.ai · 跨平台 AI 记忆中枢
+                </div>
+                <div className="text-[10px] text-[#7c3aed] mt-0.5 font-medium">
+                  prompt-ai.work
+                </div>
+              </motion.div>
+            )}
           </div>
         )}
 
         {/* ─── FOOTER ─────────────────────────────────────── */}
         <div className="border-t border-zinc-100 px-5 py-3 bg-zinc-50/50">
-          <Button variant="default" size="sm" onClick={onClose} className="w-full text-xs h-8">
-            关闭
-          </Button>
+          {shareMode ? (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => setShareMode(false)}
+              className="w-full text-xs h-8"
+            >
+              ← 退出截图模式
+            </Button>
+          ) : (
+            <Button variant="default" size="sm" onClick={onClose} className="w-full text-xs h-8">
+              关闭
+            </Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>
