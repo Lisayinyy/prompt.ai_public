@@ -64,7 +64,8 @@
     "sidePanel",
     "activeTab",
     "scripting",
-    "tabs"
+    "tabs",
+    "identity"
   ],
   "host_permissions": [
     "https://prompt-optimizer-api.prompt-optimizer.workers.dev/*",

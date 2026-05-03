@@ -629,73 +629,64 @@ export default function Sidebar() {
   }, []);
 
   const handleGoogleSignIn = async () => {
+    // v23.1: 改用 chrome.identity.launchWebAuthFlow 是 chrome 扩展正统 OAuth 方案
+    // 优势:
+    //   1. redirectTo 用 chrome.identity.getRedirectURL() 返回的 chromiumapp.org URL
+    //   2. Chrome 自动拦截 redirect,不用浏览器加载第三方页面
+    //   3. 完全不依赖网络稳定性 / Supabase 根 URL 行为
+    //   4. 不需要 chrome.scripting polling
+    if (typeof chrome === "undefined" || !chrome?.identity) {
+      // 非扩展环境 (如本地开发) fallback 到原 web flow
+      const { data } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { queryParams: { prompt: "select_account" } },
+      });
+      if (data?.url) window.open(data.url, "_blank");
+      return;
+    }
+
+    const redirectURL = chrome.identity.getRedirectURL();  // https://EXT_ID.chromiumapp.org/
     const { data } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         skipBrowserRedirect: true,
-        // 注意: redirectTo 不能指向 Supabase 自己的 /auth/v1/callback 路径
-        // Supabase 会拒绝(防 OAuth reflection attack),报 bad_oauth_callback
-        // 改用 site_url 根域名,access_token 会放在 hash 里
-        redirectTo: "https://vyuzkbdxsweaqftyqifh.supabase.co/",
-        queryParams: {
-          prompt: "select_account",
-        },
+        redirectTo: redirectURL,
+        queryParams: { prompt: "select_account" },
       },
     });
     if (!data?.url) return;
 
-    if (typeof chrome !== "undefined" && chrome?.tabs) {
-      // 记录当前正在看的标签页，登录完回来
-      const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const returnTabId = currentTab?.id;
-
-      const tab = await chrome.tabs.create({ url: data.url });
-      const tabId = tab.id!;
-
-      // 轮询检查登录标签页的 URL（hash 部分 chrome.tabs.onUpdated 拿不到）
-      const checkInterval = setInterval(async () => {
-        try {
-          const results = await chrome.scripting.executeScript({
-            target: { tabId },
-            func: () => window.location.href,
-          });
-          const currentUrl = results?.[0]?.result || "";
-
-          if (currentUrl.includes("access_token=")) {
-            clearInterval(checkInterval);
-
-            const hash = currentUrl.split("#")[1];
-            if (hash) {
-              const params = new URLSearchParams(hash);
-              const accessToken = params.get("access_token");
-              const refreshToken = params.get("refresh_token");
-              if (accessToken && refreshToken) {
-                await supabase.auth.setSession({
-                  access_token: accessToken,
-                  refresh_token: refreshToken,
-                });
-              }
+    try {
+      const responseUrl = await new Promise<string>((resolve, reject) => {
+        chrome.identity.launchWebAuthFlow(
+          { url: data.url, interactive: true },
+          (callbackUrl) => {
+            if (chrome.runtime.lastError || !callbackUrl) {
+              reject(new Error(chrome.runtime.lastError?.message || "OAuth cancelled"));
+              return;
             }
-            // 关闭登录标签页，切回原来的标签页
-            setTimeout(() => {
-              try { chrome.tabs.remove(tabId); } catch {}
-              // 切回登录前正在看的标签页
-              if (returnTabId) {
-                setTimeout(() => {
-                  try { chrome.tabs.update(returnTabId, { active: true }); } catch {}
-                }, 200);
-              }
-            }, 500);
+            resolve(callbackUrl);
           }
-        } catch {
-          // 标签页可能已关闭或还在 Google 域名上（无权限），忽略
-        }
-      }, 1500);
+        );
+      });
 
-      // 60 秒后停止检查（防止无限轮询）
-      setTimeout(() => clearInterval(checkInterval), 60000);
-    } else {
-      window.open(data.url, "_blank");
+      // callbackUrl 形如 https://EXT_ID.chromiumapp.org/#access_token=...&refresh_token=...
+      const hash = responseUrl.split("#")[1] || "";
+      const params = new URLSearchParams(hash);
+      const accessToken = params.get("access_token");
+      const refreshToken = params.get("refresh_token");
+      if (accessToken && refreshToken) {
+        await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn("[prompt.ai] OAuth missing tokens in callback:", responseUrl);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[prompt.ai] Google OAuth failed:", (e as Error)?.message);
     }
   };
 
