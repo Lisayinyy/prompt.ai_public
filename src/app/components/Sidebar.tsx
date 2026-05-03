@@ -763,30 +763,88 @@ export default function Sidebar() {
     platform: string | null;
     tone: string | null;
     task_type?: string | null;
+    source?: string | null;     // v24: optimize / silent_capture / manual
     score_clarity?: number | null;
     score_specificity?: number | null;
     score_structure?: number | null;
+    similarity?: number | null; // v24: 语义相似度 0-1
     created_at: string;
   };
   const [realHistory, setRealHistory] = useState<PromptRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
+  // v24: 高级搜索 + filter 状态
+  const [searchPlatforms, setSearchPlatforms] = useState<string[]>([]);
+  const [searchTaskTypes, setSearchTaskTypes] = useState<string[]>([]);
+  const [searchDays, setSearchDays] = useState<number>(90);
+  const [facets, setFacets] = useState<{ platforms: { value: string; count: number }[]; task_types: { value: string; count: number }[] }>({ platforms: [], task_types: [] });
 
-  const fetchHistory = async () => {
+  // v24: 调用新 search RPC (替代旧的 supabase.from('prompts').select)
+  const runSearch = async () => {
     if (!user) return;
     setHistoryLoading(true);
-    const { data, error } = await supabase
-      .from("prompts")
-      .select("id, original_text, optimized_text, diagnosis, platform, tone, task_type, score_clarity, score_specificity, score_structure, created_at")
-      .order("created_at", { ascending: false })
-      .limit(50);
+
+    // 拿语义 embedding (有搜索词时)
+    let queryEmbedding: number[] | null = null;
+    const q = historySearch.trim();
+    if (q.length >= 2) {
+      try {
+        const embedRes = await fetch(`${API_URL}/embed`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: q.slice(0, 4000) }),
+        });
+        const embedData = await embedRes.json().catch(() => ({}));
+        if (Array.isArray(embedData?.embedding) && embedData.embedding.length === 1024) {
+          queryEmbedding = embedData.embedding;
+        }
+      } catch {
+        // embedding 失败不致命,降级为关键词搜索
+      }
+    }
+
+    const { data, error } = await supabase.rpc("search_user_prompts", {
+      p_user_id: user.id,
+      p_query: q || null,
+      p_query_embedding: queryEmbedding,
+      p_platforms: searchPlatforms.length > 0 ? searchPlatforms : null,
+      p_task_types: searchTaskTypes.length > 0 ? searchTaskTypes : null,
+      p_days: searchDays,
+      p_limit: 50,
+    });
     if (!error && data) setRealHistory(data as PromptRecord[]);
     setHistoryLoading(false);
   };
 
+  // v24: 加载 facets (用户用过的所有平台/任务,给 filter chips 用)
+  const loadFacets = async () => {
+    if (!user) return;
+    try {
+      const { data } = await supabase.rpc("get_user_prompt_facets", { p_user_id: user.id });
+      if (data) setFacets(data as any);
+    } catch {}
+  };
+
+  // 兼容旧名字 (其他地方可能 referenced)
+  const fetchHistory = runSearch;
+
+  // v24: 切到 history tab 时加载 facets
   useEffect(() => {
-    if (isLoggedIn && activeTab === "history") fetchHistory();
+    if (isLoggedIn && activeTab === "history") {
+      loadFacets();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoggedIn, activeTab]);
+
+  // v24: 搜索/filter 变化 debounce 重新查 (300ms)
+  useEffect(() => {
+    if (!isLoggedIn || activeTab !== "history") return;
+    const timer = setTimeout(() => {
+      runSearch();
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn, activeTab, historySearch, searchPlatforms, searchTaskTypes, searchDays]);
 
   const deleteHistory = async (id: string) => {
     await supabase.from("prompts").delete().eq("id", id);
@@ -813,11 +871,8 @@ export default function Sidebar() {
     }
   };
 
-  const filteredHistory = useMemo(() => realHistory.filter(
-    (r) =>
-      r.original_text.toLowerCase().includes(historySearch.toLowerCase()) ||
-      (r.optimized_text || "").toLowerCase().includes(historySearch.toLowerCase())
-  ), [realHistory, historySearch]);
+  // v24: server-side 已经按 query/filters 搜过了,client 不再 filter
+  const filteredHistory = realHistory;
 
   // 按日期分组
   const groupedHistory = useMemo(() => {
@@ -2645,10 +2700,63 @@ export default function Sidebar() {
                       type="text"
                       value={historySearch}
                       onChange={(e) => setHistorySearch(e.target.value)}
-                      placeholder={lang === "zh" ? "搜索历史记录..." : "Search history..."}
+                      placeholder={lang === "zh" ? "搜索 (语义匹配 + 关键词)..." : "Search (semantic + keyword)..."}
                       className="w-full pl-8 pr-3 py-2 rounded-lg border border-[#e8e8ec] bg-[#fafafa] text-[13px] text-[#18181b] placeholder:text-[#c0c0cc] focus:outline-none focus:border-[#b0b0c0] transition-colors"
                     />
                   </div>
+
+                  {/* v24: 时间范围 + 平台 filter chips */}
+                  <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+                    {[
+                      { value: 1, label: "今天" },
+                      { value: 7, label: "7天" },
+                      { value: 30, label: "30天" },
+                      { value: 90, label: "全部" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setSearchDays(opt.value)}
+                        className={`px-2 py-0.5 text-[10.5px] rounded-full border transition-colors ${
+                          searchDays === opt.value
+                            ? "bg-[#18181b] text-white border-[#18181b]"
+                            : "bg-white text-[#6f6682] border-[#e7e1ef] hover:border-[#c0c0cc]"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {facets.platforms.length > 0 && (
+                    <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+                      <span className="text-[10.5px] text-[#8b8b9e] mr-0.5">平台:</span>
+                      {facets.platforms.slice(0, 8).map((p) => {
+                        const isActive = searchPlatforms.includes(p.value);
+                        return (
+                          <button
+                            key={p.value}
+                            onClick={() => setSearchPlatforms(prev =>
+                              isActive ? prev.filter(x => x !== p.value) : [...prev, p.value]
+                            )}
+                            className={`px-2 py-0.5 text-[10.5px] rounded-full border transition-colors ${
+                              isActive
+                                ? "bg-[#5d3eb8] text-white border-[#5d3eb8]"
+                                : "bg-white text-[#6f6682] border-[#e7e1ef] hover:border-[#c0c0cc]"
+                            }`}
+                          >
+                            {p.value} <span className={isActive ? "opacity-70" : "text-[#c0c0cc]"}>({p.count})</span>
+                          </button>
+                        );
+                      })}
+                      {(searchPlatforms.length > 0 || searchDays !== 90) && (
+                        <button
+                          onClick={() => { setSearchPlatforms([]); setSearchTaskTypes([]); setSearchDays(90); }}
+                          className="text-[10.5px] text-[#c0c0cc] hover:text-[#71717a] ml-1 underline"
+                        >
+                          清除
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   {recentReusableHistory.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-3">
