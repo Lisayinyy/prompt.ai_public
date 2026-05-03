@@ -475,6 +475,241 @@ async function insertWaitlist(email, source, lang, supabaseUrl, supabaseKey) {
   });
 }
 
+// ─── v20: AI Weekly Insights helpers ─────────────────────────
+// 从 request 拿 JWT,验证身份,聚合 7 天数据,调 LLM 生成洞察,渲染 HTML
+async function generateInsightsFromRequest(env, request) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    return { error: "Supabase not configured", status: 500 };
+  }
+
+  // 1. 拿 JWT (从 Authorization header)
+  const authHeader = request.headers.get("Authorization") || "";
+  const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!jwt) return { error: "Missing Authorization Bearer JWT", status: 401 };
+
+  // 2. 通过 Supabase auth 验证 JWT 拿 user info
+  const userInfoRes = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, {
+    headers: {
+      "apikey": env.SUPABASE_ANON_KEY,
+      "Authorization": `Bearer ${jwt}`,
+    },
+  });
+  if (!userInfoRes.ok) return { error: "Invalid JWT", status: 401 };
+  const userInfo = await userInfoRes.json();
+  const userId = userInfo.id;
+  const email = userInfo.email;
+  if (!userId) return { error: "User not found", status: 401 };
+
+  return await generateInsightsForUser(env, userId, email, jwt);
+}
+
+async function generateInsightsForUser(env, userId, email, authToken) {
+  const SUPABASE_URL = env.SUPABASE_URL;
+  const ANON_KEY = env.SUPABASE_ANON_KEY;
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
+
+  const headers = {
+    "apikey": ANON_KEY,
+    "Authorization": `Bearer ${authToken}`,
+  };
+
+  // 拉 7 天 prompts
+  const promptsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/prompts?user_id=eq.${userId}&created_at=gte.${sevenDaysAgo}&select=platform,task_type,source,created_at,original_text&order=created_at.desc&limit=200`,
+    { headers }
+  );
+  const prompts = promptsRes.ok ? await promptsRes.json() : [];
+
+  // 拉本周新 facts
+  const factsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_facts?user_id=eq.${userId}&extracted_at=gte.${sevenDaysAgo}&select=fact,confidence,task_type&order=confidence.desc&limit=10`,
+    { headers }
+  );
+  const newFacts = factsRes.ok ? await factsRes.json() : [];
+
+  // 拉 voice profile
+  const voiceRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/user_voice_profiles?user_id=eq.${userId}&select=voice_profile,synthesized_at&limit=1`,
+    { headers }
+  );
+  const voiceData = voiceRes.ok ? await voiceRes.json() : [];
+  const voice = voiceData[0] || null;
+  const voiceUpdatedThisWeek = voice && new Date(voice.synthesized_at) >= new Date(sevenDaysAgo);
+
+  // 聚合
+  const total = prompts.length;
+  const byPlatform = {};
+  const byTask = {};
+  const bySource = { silent_capture: 0, optimize: 0, manual: 0 };
+  for (const p of prompts) {
+    const plat = p.platform || "unknown";
+    byPlatform[plat] = (byPlatform[plat] || 0) + 1;
+    const task = p.task_type || "general";
+    byTask[task] = (byTask[task] || 0) + 1;
+    const src = p.source || "optimize";
+    bySource[src] = (bySource[src] || 0) + 1;
+  }
+  const topPlatforms = Object.entries(byPlatform).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const topTasks = Object.entries(byTask).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const platformsCount = Object.keys(byPlatform).length;
+
+  // LLM 生成本周观察
+  let insightText = total >= 3
+    ? "本期 prompt.ai 已记录到你的活跃使用,继续多用会有更精准的画像。"
+    : "本周数据较少,多用几次 prompt.ai 让 AI 更懂你。";
+  if (total >= 5) {
+    try {
+      const summary = `用户最近 7 天 AI 使用统计:
+- 总 prompt 数: ${total} (跨 ${platformsCount} 个平台)
+- 主要平台: ${topPlatforms.map(([p, c]) => `${p}(${c})`).join(", ")}
+- 主要任务: ${topTasks.map(([t, c]) => `${t}(${c})`).join(", ")}
+- 跨平台 silent capture: ${bySource.silent_capture}
+- prompt.ai 主动优化: ${bySource.optimize}
+- 本周新提炼偏好: ${newFacts.length} 条 ${newFacts.length > 0 ? "(" + newFacts.slice(0, 2).map(f => f.fact).join("; ") + ")" : ""}
+- voice profile 本周${voiceUpdatedThisWeek ? "已更新" : "未更新"}`;
+
+      const insightPayload = {
+        model: MODEL,
+        messages: [
+          { role: "system", content: `你是 AI 使用习惯洞察分析师。基于用户最近 7 天的 AI 使用统计,写一段 100-180 字的本周观察。要求:1) 直接说重点,不寒暄,不复述数字 2) 用第二人称(你) 3) 给出 1 个具体观察 + 1 条小建议 4) 中文输出,口吻像懂用户的私人助理 5) 输出纯叙事,不用列表/Markdown` },
+          { role: "user", content: summary },
+        ],
+        temperature: 0.6,
+        max_tokens: 500,
+      };
+      const llmRes = await callMiniMaxWithRetry(env, insightPayload);
+      if (llmRes.response.ok) {
+        const llmData = await llmRes.response.json();
+        const raw = llmData.choices?.[0]?.message?.content || "";
+        const cleaned = cleanModelOutput(raw).trim();
+        if (cleaned.length >= 30 && cleaned.length <= 500) insightText = cleaned;
+      }
+    } catch (e) {
+      console.warn("Insight LLM call failed:", e?.message);
+    }
+  }
+
+  // 渲染 HTML 邮件
+  const dateStr = `${new Date().getFullYear()}/${new Date().getMonth() + 1}/${new Date().getDate()}`;
+  const subject = `📊 你这周的 AI 使用画像 · ${dateStr}`;
+
+  // Top platforms 渲染成 mini bars
+  const maxPlatformCount = topPlatforms.length > 0 ? topPlatforms[0][1] : 1;
+  const platformBarsHtml = topPlatforms.map(([p, c]) => {
+    const pct = Math.round((c / maxPlatformCount) * 100);
+    return `<div style="margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;font-size:13px;color:#3a3a45;margin-bottom:3px;">
+        <span style="font-weight:600;">${p}</span>
+        <span style="color:#71717a;">${c} 条</span>
+      </div>
+      <div style="height:6px;background:#f0f0f4;border-radius:3px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,#7c3aed,#a78bfa);"></div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const newFactsHtml = newFacts.length > 0
+    ? `<div style="background:#faf7ff;border:1px solid #e0d3f9;border-radius:10px;padding:16px 20px;margin-bottom:24px;">
+        <div style="font-size:12px;color:#7c3aed;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">📌 本周新学到的偏好</div>
+        ${newFacts.slice(0, 5).map(f => `<div style="display:flex;align-items:flex-start;gap:8px;font-size:13px;color:#3a3a45;line-height:1.6;margin-bottom:6px;"><span style="color:#7c3aed;font-weight:700;">▮</span><span>${escapeHtml(f.fact)}</span></div>`).join("")}
+      </div>`
+    : "";
+
+  const voiceHtml = voice
+    ? `<div style="background:linear-gradient(135deg,#5d3eb8,#7c3aed);border-radius:12px;padding:20px 24px;color:white;margin-bottom:24px;">
+        <div style="font-size:11px;opacity:0.8;margin-bottom:6px;letter-spacing:0.5px;">✨ 你的 AI 声音指纹 ${voiceUpdatedThisWeek ? "(本周更新)" : ""}</div>
+        <div style="font-size:13px;line-height:1.7;font-family:Georgia,serif;font-weight:300;">${escapeHtml(voice.voice_profile.slice(0, 300))}${voice.voice_profile.length > 300 ? "..." : ""}</div>
+      </div>`
+    : "";
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f4f6;margin:0;padding:32px 16px;">
+  <div style="max-width:560px;margin:0 auto;">
+    <!-- Header -->
+    <div style="background:#18181b;border-radius:16px 16px 0 0;padding:32px;">
+      <div style="font-family:Georgia,serif;font-size:1.3rem;color:#fff;margin-bottom:6px;">prompt<span style="color:#a78bfa;">.</span>ai</div>
+      <h1 style="font-size:1.6rem;color:#fff;margin:8px 0 0;font-weight:700;line-height:1.3;">📊 你这周的 AI 使用画像</h1>
+      <p style="color:#a1a1aa;font-size:0.9rem;margin:8px 0 0;">${dateStr}</p>
+    </div>
+    <!-- Body -->
+    <div style="background:#fff;padding:28px 32px;border-left:1px solid #e4e4e7;border-right:1px solid #e4e4e7;">
+      <!-- Stats grid -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px;">
+        <div style="background:#fafafa;border:1px solid #e8e8ec;border-radius:10px;padding:14px;">
+          <div style="font-size:1.6rem;font-weight:700;color:#18181b;">${total}</div>
+          <div style="font-size:0.78rem;color:#71717a;margin-top:2px;">本周 prompts</div>
+        </div>
+        <div style="background:#fafafa;border:1px solid #e8e8ec;border-radius:10px;padding:14px;">
+          <div style="font-size:1.6rem;font-weight:700;color:#18181b;">${platformsCount}</div>
+          <div style="font-size:0.78rem;color:#71717a;margin-top:2px;">使用的平台</div>
+        </div>
+        <div style="background:#faf7ff;border:1px solid #e0d3f9;border-radius:10px;padding:14px;">
+          <div style="font-size:1.6rem;font-weight:700;color:#7c3aed;">${bySource.silent_capture}</div>
+          <div style="font-size:0.78rem;color:#7c6fc4;margin-top:2px;">📡 跨平台捕获</div>
+        </div>
+        <div style="background:#fafafa;border:1px solid #e8e8ec;border-radius:10px;padding:14px;">
+          <div style="font-size:1.6rem;font-weight:700;color:#18181b;">${newFacts.length}</div>
+          <div style="font-size:0.78rem;color:#71717a;margin-top:2px;">📌 新偏好</div>
+        </div>
+      </div>
+
+      <!-- LLM insight (centerpiece) -->
+      <div style="background:#fffbf0;border:1px solid #f0e4c8;border-left:4px solid #c09b3f;border-radius:8px;padding:18px 20px;margin-bottom:24px;">
+        <div style="font-size:11px;color:#c09b3f;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">✦ 本周观察</div>
+        <p style="font-size:13.5px;color:#5a4a30;line-height:1.7;margin:0;font-style:italic;">${escapeHtml(insightText)}</p>
+      </div>
+
+      ${voiceHtml}
+
+      <!-- Top platforms -->
+      ${topPlatforms.length > 0 ? `<div style="margin-bottom:24px;">
+        <div style="font-size:12px;color:#71717a;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">🌍 跨平台使用 TOP ${topPlatforms.length}</div>
+        ${platformBarsHtml}
+      </div>` : ""}
+
+      ${newFactsHtml}
+    </div>
+
+    <!-- Footer CTA -->
+    <div style="background:#18181b;border-radius:0 0 16px 16px;padding:28px 32px;text-align:center;">
+      <p style="color:#a1a1aa;font-size:0.9rem;margin:0 0 16px;">你的 AI 越用越懂你 — 跨 22 平台的记忆中枢</p>
+      <a href="https://prompt-ai.work" style="display:inline-block;background:#7c3aed;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:0.95rem;font-weight:600;">打开 prompt.ai dashboard →</a>
+      <p style="color:#52525b;font-size:0.72rem;margin:18px 0 0;">prompt<span style="color:#a78bfa;">.</span>ai · <a href="mailto:lisayyyin@qq.com" style="color:#8b8b9e;text-decoration:none;">lisayyyin@qq.com</a></p>
+    </div>
+  </div>
+</body></html>`;
+
+  return {
+    userId,
+    email,
+    subject,
+    html,
+    insight: insightText,
+    summary: {
+      total,
+      platforms_count: platformsCount,
+      top_platforms: topPlatforms,
+      top_tasks: topTasks,
+      by_source: bySource,
+      new_facts_count: newFacts.length,
+      voice_present: !!voice,
+      voice_updated_this_week: voiceUpdatedThisWeek,
+    },
+  };
+}
+
+// HTML escape (避免 voice 或 fact 内容里的特殊字符破坏邮件)
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[c]));
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -1206,6 +1441,100 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
+    // ─── /generate-insights (v20): 生成本周 AI 洞察 HTML (供前端预览或邮件发送) ──
+    if (url.pathname === "/generate-insights") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const result = await generateInsightsFromRequest(env, request);
+        if (result.error) {
+          return new Response(JSON.stringify({ error: result.error }), {
+            status: result.status || 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify(result), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Generate-insights error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // ─── /send-insights-email (v20): 立即发送本周洞察邮件到用户邮箱 ──
+    if (url.pathname === "/send-insights-email") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const result = await generateInsightsFromRequest(env, request);
+        if (result.error) {
+          return new Response(JSON.stringify({ error: result.error }), {
+            status: result.status || 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        if (!result.email) {
+          return new Response(JSON.stringify({ error: "User email not found" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        if (!env.RESEND_API_KEY) {
+          return new Response(JSON.stringify({ error: "Email service not configured" }), {
+            status: 503, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        const emailRes = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          },
+          body: JSON.stringify({
+            from: "prompt.ai <hi@prompt-ai.work>",
+            to: [result.email],
+            subject: result.subject,
+            html: result.html,
+          }),
+        });
+        if (!emailRes.ok) {
+          const errText = await emailRes.text();
+          return new Response(JSON.stringify({ error: "Email send failed", details: errText.slice(0, 200) }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        // 更新 last_insights_sent_at (用户 JWT,RLS 允许)
+        const authHeader = request.headers.get("Authorization") || "";
+        const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
+        if (jwt && env.SUPABASE_URL && env.SUPABASE_ANON_KEY) {
+          await fetch(`${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${result.userId}`, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              "apikey": env.SUPABASE_ANON_KEY,
+              "Authorization": `Bearer ${jwt}`,
+              "Prefer": "return=minimal",
+            },
+            body: JSON.stringify({ last_insights_sent_at: new Date().toISOString() }),
+          });
+        }
+        return new Response(JSON.stringify({ sent: true, email: result.email }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Send-insights-email error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,
@@ -1339,6 +1668,106 @@ Now translate the user's prompt to this target platform's optimal style. Output 
         JSON.stringify({ error: "服务异常，请稍后再试" }),
         { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
       );
+    }
+  },
+
+  // ─── v20: Cron handler — 每周一 01:00 UTC (北京 09:00) 给所有订阅用户发洞察邮件 ─
+  // wrangler.toml 必须有: [triggers] crons = ["0 1 * * 1"]
+  // 必须配 SUPABASE_SERVICE_ROLE_KEY secret (cron 用,绕 RLS 拿订阅列表)
+  async scheduled(event, env, ctx) {
+    console.log("[cron] weekly insights triggered at", new Date().toISOString());
+
+    if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY || !env.RESEND_API_KEY) {
+      console.error("[cron] missing required env: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / RESEND_API_KEY");
+      return;
+    }
+
+    try {
+      // 1. 用 service_role 拿所有订阅了 weekly insights 的用户
+      const recipientsRes = await fetch(
+        `${env.SUPABASE_URL}/rest/v1/weekly_insights_recipients?select=user_id,email,last_insights_sent_at`,
+        {
+          headers: {
+            "apikey": env.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+          },
+        }
+      );
+      if (!recipientsRes.ok) {
+        console.error("[cron] failed to fetch recipients:", recipientsRes.status, await recipientsRes.text());
+        return;
+      }
+      const recipients = await recipientsRes.json();
+      console.log(`[cron] sending to ${recipients.length} subscribers`);
+
+      let sent = 0;
+      let failed = 0;
+
+      for (const r of recipients) {
+        try {
+          // 2. 用 service_role 当 authToken 拿数据 (注意:这绕过 RLS,所以是 admin 视角)
+          // 但 generateInsightsForUser 是按 user_id 严格过滤,不会泄漏其他用户数据
+          const insights = await generateInsightsForUser(env, r.user_id, r.email, env.SUPABASE_SERVICE_ROLE_KEY);
+          if (insights.error) {
+            console.warn(`[cron] skip ${r.user_id}: ${insights.error}`);
+            failed++;
+            continue;
+          }
+          if (!insights.email) {
+            console.warn(`[cron] skip ${r.user_id}: no email`);
+            failed++;
+            continue;
+          }
+          // 数据少的用户跳过 (不打扰 inactive 用户)
+          if ((insights.summary?.total || 0) < 3) {
+            console.log(`[cron] skip ${r.user_id}: only ${insights.summary?.total || 0} prompts this week`);
+            continue;
+          }
+
+          // 3. 发邮件
+          const emailRes = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${env.RESEND_API_KEY}`,
+            },
+            body: JSON.stringify({
+              from: "prompt.ai <hi@prompt-ai.work>",
+              to: [insights.email],
+              subject: insights.subject,
+              html: insights.html,
+            }),
+          });
+
+          if (emailRes.ok) {
+            sent++;
+            // 4. 更新 last_insights_sent_at
+            await fetch(`${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${r.user_id}`, {
+              method: "PATCH",
+              headers: {
+                "Content-Type": "application/json",
+                "apikey": env.SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+                "Prefer": "return=minimal",
+              },
+              body: JSON.stringify({ last_insights_sent_at: new Date().toISOString() }),
+            });
+          } else {
+            failed++;
+            console.warn(`[cron] email send failed for ${r.user_id}: ${emailRes.status}`);
+          }
+
+          // 限速 — Resend free tier 10/sec,我们 1/sec 远低于上限
+          await new Promise((res) => setTimeout(res, 1000));
+        } catch (err) {
+          failed++;
+          console.error(`[cron] exception for ${r.user_id}:`, err?.message);
+        }
+      }
+
+      console.log(`[cron] weekly insights done: sent=${sent}, failed=${failed}, total=${recipients.length}`);
+    } catch (err) {
+      console.error("[cron] fatal:", err);
     }
   },
 };

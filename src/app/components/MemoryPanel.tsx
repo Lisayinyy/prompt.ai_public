@@ -90,6 +90,12 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [captureEnabled, setCaptureEnabled] = useState<boolean>(true);
   const [shareMode, setShareMode] = useState<boolean>(false); // v17: 截图分享模式
+  // v20: weekly insights 订阅状态
+  const [insightsEnabled, setInsightsEnabled] = useState<boolean>(false);
+  const [insightsLastSent, setInsightsLastSent] = useState<string | null>(null);
+  const [insightsEmail, setInsightsEmail] = useState<string | null>(null);
+  const [sendingInsights, setSendingInsights] = useState<boolean>(false);
+  const [insightsToast, setInsightsToast] = useState<string>("");
 
   // chrome.storage 同步 captureEnabled
   useEffect(() => {
@@ -103,6 +109,59 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
     setCaptureEnabled(next);
     if (typeof chrome !== "undefined" && chrome?.storage?.local) {
       chrome.storage.local.set({ promptai_capture_enabled: next });
+    }
+  };
+
+  // v20: 加载 weekly insights 订阅状态
+  useEffect(() => {
+    if (!open || !user) return;
+    supabase.rpc("get_weekly_insights_status").then(({ data }) => {
+      const d = data as any;
+      setInsightsEnabled(d?.enabled === true);
+      setInsightsLastSent(d?.last_sent_at || null);
+      setInsightsEmail(d?.email || user.email || null);
+    });
+  }, [open, user]);
+
+  const handleToggleInsights = async (next: boolean) => {
+    setInsightsEnabled(next); // optimistic
+    try {
+      await supabase.rpc("set_weekly_insights_enabled", { p_enabled: next });
+    } catch {
+      setInsightsEnabled(!next);
+    }
+  };
+
+  const handleSendInsightsNow = async () => {
+    if (!user || sendingInsights) return;
+    setSendingInsights(true);
+    setInsightsToast("");
+    try {
+      // 拿当前 session JWT
+      const { data: { session } } = await supabase.auth.getSession();
+      const jwt = session?.access_token;
+      if (!jwt) throw new Error("No active session");
+
+      const res = await fetch(`${API_URL}/send-insights-email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${jwt}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (data?.sent) {
+        setInsightsToast(`✓ 已发送到 ${data.email}`);
+        setInsightsLastSent(new Date().toISOString());
+      } else {
+        setInsightsToast(`✗ ${data?.error || "发送失败"}`);
+      }
+    } catch (e) {
+      setInsightsToast(`✗ ${(e as Error)?.message || "网络错误"}`);
+    } finally {
+      setSendingInsights(false);
+      setTimeout(() => setInsightsToast(""), 4000);
     }
   };
 
@@ -471,6 +530,46 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               >
                 {refreshing ? "🪄 生成中..." : "🪄 重新生成画像 (跳过 10 条阈值)"}
               </Button>
+
+              {/* v20: AI Weekly Insights 订阅 */}
+              <div className="rounded-md bg-white px-3 py-2 border border-zinc-200 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <div className="text-[13px] font-medium text-zinc-900 flex items-center gap-1.5">
+                      <span>📨</span> 每周 AI 洞察邮件
+                    </div>
+                    <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
+                      {insightsEnabled
+                        ? `每周一早上发到 ${insightsEmail || "你的邮箱"}`
+                        : "订阅后每周一收到「你的 AI 使用画像」"}
+                    </p>
+                    {insightsLastSent && (
+                      <p className="text-[10px] text-zinc-400 mt-0.5">
+                        上次发送: {new Date(insightsLastSent).toLocaleDateString("zh-CN")}
+                      </p>
+                    )}
+                  </div>
+                  <Switch
+                    checked={insightsEnabled}
+                    onCheckedChange={handleToggleInsights}
+                    aria-label="周报订阅开关"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={sendingInsights}
+                  onClick={handleSendInsightsNow}
+                  className="w-full text-xs h-7 border-[#e0d3f9] hover:bg-[#faf7ff]"
+                >
+                  {sendingInsights ? "🚀 发送中..." : "🚀 立即发送一次预览到邮箱"}
+                </Button>
+                {insightsToast && (
+                  <div className={`text-[11px] text-center ${insightsToast.startsWith("✓") ? "text-green-600" : "text-red-500"}`}>
+                    {insightsToast}
+                  </div>
+                )}
+              </div>
 
               {/* v17: 分享按钮 */}
               <Button
