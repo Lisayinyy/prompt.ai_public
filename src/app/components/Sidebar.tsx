@@ -30,10 +30,12 @@ import {
   TrendingUp,
   Calendar,
   ChevronLeft,
+  Folder,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { MemoryPanel } from "./MemoryPanel";
 import { OnboardingCard } from "./OnboardingCard";
+import { ProjectsTab } from "./ProjectsTab";
 import {
   PieChart,
   Pie,
@@ -50,13 +52,14 @@ import {
 } from "recharts";
 
 type Lang = "en" | "zh";
-type Tab = "optimize" | "history" | "settings" | "insights";
+type Tab = "optimize" | "history" | "projects" | "settings" | "insights";
 
 // ─── i18n ───────────────────────────────────────────
 const i18n: Record<Lang, Record<string, string>> = {
   en: {
     optimize: "Optimize",
     history: "History",
+    projects: "Projects",
     settings: "Settings",
     insights: "Insights",
     targetAi: "TARGET AI",
@@ -157,6 +160,7 @@ const i18n: Record<Lang, Record<string, string>> = {
   zh: {
     optimize: "优化",
     history: "历史",
+    projects: "项目",
     settings: "设置",
     insights: "洞察",
     targetAi: "目标 AI",
@@ -1795,6 +1799,7 @@ export default function Sidebar() {
   const tabs = [
     { key: "optimize" as Tab, icon: Sparkles },
     { key: "history" as Tab, icon: History },
+    { key: "projects" as Tab, icon: Folder },
     { key: "insights" as Tab, icon: BarChart3 },
     { key: "settings" as Tab, icon: Settings },
   ];
@@ -3405,6 +3410,19 @@ export default function Sidebar() {
                   </button>
                 </div>
               )}
+            </motion.div>
+          )}
+
+          {/* ─── PROJECTS TAB (v25) ─── */}
+          {activeTab === "projects" && (
+            <motion.div
+              key="projects"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.15 }}
+            >
+              <ProjectsTab user={user} lang={lang as "zh" | "en"} />
             </motion.div>
           )}
 
