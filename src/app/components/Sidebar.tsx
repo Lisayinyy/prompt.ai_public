@@ -622,7 +622,10 @@ export default function Sidebar() {
       provider: "google",
       options: {
         skipBrowserRedirect: true,
-        redirectTo: "https://vyuzkbdxsweaqftyqifh.supabase.co/auth/v1/callback",
+        // 注意: redirectTo 不能指向 Supabase 自己的 /auth/v1/callback 路径
+        // Supabase 会拒绝(防 OAuth reflection attack),报 bad_oauth_callback
+        // 改用 site_url 根域名,access_token 会放在 hash 里
+        redirectTo: "https://vyuzkbdxsweaqftyqifh.supabase.co/",
         queryParams: {
           prompt: "select_account",
         },
