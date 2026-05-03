@@ -181,39 +181,79 @@
 
   // 主 capture 函数: POST 到 Supabase prompts 表 (用户 JWT auth, RLS 自动校验)
   async function captureSilentPrompt(text) {
-    if (!captureEnabled || !jwt || !userId) return;
+    if (!captureEnabled) {
+      console.warn("[prompt.ai capture] skip: captureEnabled=false");
+      return;
+    }
+    if (!jwt || !userId) {
+      console.warn("[prompt.ai capture] skip: not logged in (no JWT)");
+      return;
+    }
     const trimmed = String(text || "").trim();
-    if (trimmed.length < 10 || trimmed.length > 8000) return;
+    if (trimmed.length < 10) {
+      console.warn("[prompt.ai capture] skip: too short (" + trimmed.length + " chars)");
+      return;
+    }
+    if (trimmed.length > 8000) {
+      console.warn("[prompt.ai capture] skip: too long (" + trimmed.length + " chars)");
+      return;
+    }
+    // 占位符/系统文案过滤 (常见的"输入..." / "Reply..." 等模板)
+    const placeholders = /^(send a message|reply|message |输入|请输入|发送消息|回复|ask anything)/i;
+    if (placeholders.test(trimmed)) {
+      console.warn("[prompt.ai capture] skip: placeholder-like text");
+      return;
+    }
 
     // 5 秒去重 (防 React 重渲染时 input 事件重复触发)
     const hash = quickHash(trimmed);
-    if (capturedHashes.has(hash)) return;
+    if (capturedHashes.has(hash)) {
+      console.warn("[prompt.ai capture] skip: duplicate within 5s window");
+      return;
+    }
     capturedHashes.add(hash);
     setTimeout(() => capturedHashes.delete(hash), 5000);
 
     const platform = getCurrentPlatform();
+    const preview = trimmed.length > 50 ? trimmed.slice(0, 50) + "..." : trimmed;
+    console.log(`[prompt.ai capture] platform=${platform} text="${preview}"`);
 
-    try {
-      await fetch(`${SUPABASE_URL}/rest/v1/prompts`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "apikey": SUPABASE_ANON_KEY,
-          "Authorization": `Bearer ${jwt}`,
-          "Prefer": "return=minimal",
-        },
-        body: JSON.stringify({
-          user_id: userId,
-          original_text: trimmed,
-          source: "silent_capture",
-          platform: platform,
-          task_type: "general",
-        }),
-      });
-      // 静默成功
-    } catch {
-      // 静默失败,不打扰用户体验
+    // 重试 1 次 (网络瞬断容错,demo 必备)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/prompts`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${jwt}`,
+            "Prefer": "return=minimal",
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            original_text: trimmed,
+            source: "silent_capture",
+            platform: platform,
+            task_type: "general",
+          }),
+        });
+        if (res.ok) {
+          console.log(`[prompt.ai capture] ✓ saved to ${platform}`);
+          return;
+        }
+        // 401 = JWT 过期,不重试 (重试也没用)
+        if (res.status === 401) {
+          console.error("[prompt.ai capture] ✗ 401 unauthorized — JWT 可能过期,请刷新 sidebar");
+          return;
+        }
+        console.warn(`[prompt.ai capture] attempt ${attempt + 1} failed: ${res.status}`);
+      } catch (err) {
+        console.warn(`[prompt.ai capture] attempt ${attempt + 1} network error:`, err?.message);
+      }
+      // 1 秒后重试
+      if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
     }
+    console.error("[prompt.ai capture] ✗ all retries failed");
   }
 
   // 输入框监听: 检测"清空"动作 = 用户发送了 prompt
@@ -346,6 +386,8 @@
       for (const sel of INPUT_SELECTORS) {
         if (el.matches && el.matches(sel)) {
           activeInput = el;
+          // v15: 重置 lastInputText (新输入框 → 切换会话/页面,旧文本失效)
+          lastInputText = getInputText(el).trim();
           positionBtn(el);
           return;
         }
@@ -357,6 +399,8 @@
       const input = findVisibleInput();
       if (input && input !== activeInput) {
         activeInput = input;
+        // v15: 同样重置 lastInputText
+        lastInputText = getInputText(input).trim();
       }
     }, 2000);
 
