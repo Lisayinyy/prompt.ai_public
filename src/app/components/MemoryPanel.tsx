@@ -23,6 +23,17 @@ import {
 } from "./ui/dialog";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from "./ui/alert-dialog";
+import { Input } from "./ui/input";
 
 // ─── 平台显示配置: code → {显示名, emoji, 主题色} ───────────
 const PLATFORM_DISPLAY: Record<string, { name: string; emoji: string; color: string }> = {
@@ -100,6 +111,12 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   // v21: PNG 分享卡下载状态
   const [downloadingPng, setDownloadingPng] = useState<boolean>(false);
   const shareCardRef = useRef<HTMLDivElement>(null);
+  // v22: 数据导出 + 删除账号状态
+  const [exporting, setExporting] = useState<boolean>(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState<boolean>(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState<string>("");
+  const [deleting, setDeleting] = useState<boolean>(false);
+  const [dataToast, setDataToast] = useState<string>("");
 
   // chrome.storage 同步 captureEnabled
   useEffect(() => {
@@ -198,6 +215,95 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
       console.error("[prompt.ai] PNG download failed:", e);
     } finally {
       setDownloadingPng(false);
+    }
+  };
+
+  // v22: 一键导出全部用户数据为 JSON
+  const handleExportData = async () => {
+    if (!user || exporting) return;
+    setExporting(true);
+    setDataToast("");
+    try {
+      const [promptsRes, factsRes, voiceRes, profileRes] = await Promise.all([
+        supabase.from("prompts").select("*").eq("user_id", user.id),
+        supabase.from("user_facts").select("*").eq("user_id", user.id),
+        supabase.from("user_voice_profiles").select("*").eq("user_id", user.id),
+        supabase.from("profiles").select("*").eq("id", user.id),
+      ]);
+
+      const exportData = {
+        meta: {
+          exported_at: new Date().toISOString(),
+          exported_by: "prompt.ai memory panel v22",
+          user_id: user.id,
+          user_email: user.email,
+          schema_version: "v20260506",
+        },
+        profile: profileRes.data?.[0] || null,
+        prompts: promptsRes.data || [],
+        user_facts: factsRes.data || [],
+        user_voice_profile: voiceRes.data?.[0] || null,
+        counts: {
+          prompts: promptsRes.data?.length || 0,
+          facts: factsRes.data?.length || 0,
+          has_voice_profile: !!voiceRes.data?.[0],
+        },
+      };
+
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.download = `prompt-ai-export-${new Date().toISOString().slice(0, 10)}.json`;
+      link.href = url;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setDataToast(`✓ 已导出 ${exportData.counts.prompts} prompts + ${exportData.counts.facts} facts`);
+    } catch (e) {
+      setDataToast(`✗ 导出失败: ${(e as Error)?.message || "未知错误"}`);
+    } finally {
+      setExporting(false);
+      setTimeout(() => setDataToast(""), 5000);
+    }
+  };
+
+  // v22: 删除账号 (永久,GDPR-ready)
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== "DELETE" || deleting) return;
+    setDeleting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const jwt = session?.access_token;
+      if (!jwt) throw new Error("No active session");
+
+      const res = await fetch(`${API_URL}/delete-account`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${jwt}`,
+        },
+      });
+      const data = await res.json();
+      if (!data?.deleted) {
+        setDataToast(`✗ ${data?.error || "删除失败,请重试"}`);
+        setDeleting(false);
+        return;
+      }
+      // 删除成功 → 强制登出 → 关闭 modal → reload
+      await supabase.auth.signOut();
+      setDeleteConfirmOpen(false);
+      onClose();
+      // 用 setTimeout 让 onClose 先生效再 reload
+      setTimeout(() => {
+        if (typeof window !== "undefined") window.location.reload();
+      }, 300);
+    } catch (e) {
+      setDataToast(`✗ ${(e as Error)?.message || "网络错误"}`);
+      setDeleting(false);
     }
   };
 
@@ -307,6 +413,44 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) { setShareMode(false); onClose(); } }}>
       <DialogContent className="max-w-[680px] max-h-[92vh] overflow-y-auto p-0 gap-0">
+        {/* v22: 删除账号二次确认 modal (放在 Dialog 内部不影响其他逻辑) */}
+        <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-red-600">⚠️ 永久删除账号</AlertDialogTitle>
+              <AlertDialogDescription className="space-y-2">
+                <span className="block">此操作将<b>永久</b>删除你的:</span>
+                <span className="block ml-2 text-zinc-700 text-sm">
+                  • 所有 prompts 历史<br/>
+                  • 所有提取的偏好 facts<br/>
+                  • voice profile<br/>
+                  • profile 个人资料<br/>
+                  • 登录账号本身
+                </span>
+                <span className="block text-red-600 font-semibold">此操作不可撤销,数据无法恢复。</span>
+                <span className="block">如果只是想暂时离开,直接登出即可。要确认永久删除,请在下方输入 <code className="bg-zinc-100 px-1.5 py-0.5 rounded text-red-600">DELETE</code>:</span>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <Input
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder="输入 DELETE 确认"
+              className="font-mono"
+              autoFocus
+            />
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => { e.preventDefault(); handleDeleteAccount(); }}
+                disabled={deleteConfirmText !== "DELETE" || deleting}
+                className="bg-red-600 hover:bg-red-700 disabled:bg-red-300"
+              >
+                {deleting ? "删除中..." : "永久删除"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         {/* ─── HEADER ──────────────────────────────────────── */}
         <DialogHeader className={`px-5 pt-5 pb-3 border-b border-zinc-100 ${shareMode ? "hidden" : ""}`}>
           <DialogTitle className="flex items-center gap-2 text-base">
@@ -617,6 +761,40 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               >
                 📸 进入截图分享模式
               </Button>
+
+              {/* v22: 数据管理 (导出 + 删除) */}
+              <div className="rounded-md bg-white px-3 py-2 border border-zinc-200 space-y-2">
+                <div className="text-[13px] font-medium text-zinc-900 flex items-center gap-1.5">
+                  <span>🗂️</span> 数据管理
+                </div>
+                <p className="text-[11px] text-zinc-500 leading-relaxed">
+                  你的数据完全属于你 — 可一键导出 / 永久删除
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={exporting}
+                    onClick={handleExportData}
+                    className="flex-1 text-xs h-7"
+                  >
+                    {exporting ? "📦 导出中..." : "📦 导出全部数据 (JSON)"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setDeleteConfirmText(""); setDeleteConfirmOpen(true); }}
+                    className="text-xs h-7 px-3 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                  >
+                    🗑️ 删除账号
+                  </Button>
+                </div>
+                {dataToast && (
+                  <div className={`text-[11px] text-center ${dataToast.startsWith("✓") ? "text-green-600" : "text-red-500"}`}>
+                    {dataToast}
+                  </div>
+                )}
+              </div>
             </motion.section>
 
             {/* v17: Share Mode 水印 (在 share mode 下显示在内容底部) */}

@@ -1535,6 +1535,77 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
+    // ─── /delete-account 路由 (v22): GDPR 一键永久删除账号 ──
+    // 流程: 验证 user JWT → 用 service_role 调 supabase auth admin
+    //       → DELETE auth.users/{id} → ON DELETE CASCADE 级联删除所有数据
+    if (url.pathname === "/delete-account") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY || !env.SUPABASE_SERVICE_ROLE_KEY) {
+          return new Response(JSON.stringify({ error: "Service not configured (missing SUPABASE_SERVICE_ROLE_KEY)" }), {
+            status: 503, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        // 验证 user JWT
+        const authHeader = request.headers.get("Authorization") || "";
+        const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
+        if (!jwt) {
+          return new Response(JSON.stringify({ error: "Missing Authorization Bearer JWT" }), {
+            status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        const userInfoRes = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, {
+          headers: {
+            "apikey": env.SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${jwt}`,
+          },
+        });
+        if (!userInfoRes.ok) {
+          return new Response(JSON.stringify({ error: "Invalid JWT" }), {
+            status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        const userInfo = await userInfoRes.json();
+        const userId = userInfo.id;
+        if (!userId) {
+          return new Response(JSON.stringify({ error: "User not found" }), {
+            status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        // 用 service_role 调 admin API 删 auth.users
+        // ON DELETE CASCADE 会自动级联删除 prompts/facts/voice/profiles 等
+        const deleteRes = await fetch(`${env.SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+          method: "DELETE",
+          headers: {
+            "apikey": env.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+          },
+        });
+
+        if (!deleteRes.ok) {
+          const errText = await deleteRes.text();
+          console.error("Delete user failed:", deleteRes.status, errText);
+          return new Response(JSON.stringify({ error: "Delete failed", status: deleteRes.status, details: errText.slice(0, 200) }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ deleted: true, user_id: userId }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Delete-account error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Method not allowed" }), {
         status: 405,
