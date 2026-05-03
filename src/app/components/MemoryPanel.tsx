@@ -9,8 +9,9 @@
 //   ⚙️ 设置 (toggle + 重新生成 + 监听捕获 mini-card)
 // ============================================================
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion } from "motion/react";
+import { toPng } from "html-to-image";
 import { supabase } from "../../lib/supabase";
 import type { User } from "@supabase/supabase-js";
 import {
@@ -96,6 +97,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   const [insightsEmail, setInsightsEmail] = useState<string | null>(null);
   const [sendingInsights, setSendingInsights] = useState<boolean>(false);
   const [insightsToast, setInsightsToast] = useState<string>("");
+  // v21: PNG 分享卡下载状态
+  const [downloadingPng, setDownloadingPng] = useState<boolean>(false);
+  const shareCardRef = useRef<HTMLDivElement>(null);
 
   // chrome.storage 同步 captureEnabled
   useEffect(() => {
@@ -162,6 +166,38 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
     } finally {
       setSendingInsights(false);
       setTimeout(() => setInsightsToast(""), 4000);
+    }
+  };
+
+  // v21: 一键下载 PNG 分享卡
+  const handleDownloadPng = async () => {
+    if (!shareCardRef.current || downloadingPng) return;
+    setDownloadingPng(true);
+    try {
+      const dataUrl = await toPng(shareCardRef.current, {
+        pixelRatio: 2,        // 2x 高清
+        backgroundColor: "#ffffff",
+        cacheBust: true,
+        // 跳过会被 share mode 隐藏的元素 (DialogHeader / Footer / 设置区都通过 className=hidden 隐藏)
+        filter: (node) => {
+          if (node instanceof HTMLElement) {
+            const cls = node.className || "";
+            if (typeof cls === "string" && cls.includes("hidden")) return false;
+          }
+          return true;
+        },
+      });
+      const link = document.createElement("a");
+      link.download = `prompt-ai-memory-${new Date().toISOString().slice(0, 10)}.png`;
+      link.href = dataUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[prompt.ai] PNG download failed:", e);
+    } finally {
+      setDownloadingPng(false);
     }
   };
 
@@ -282,15 +318,16 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
           </DialogDescription>
         </DialogHeader>
 
-        {/* v17: Share Mode 顶部品牌头 (替代普通 header) */}
-        {shareMode && (
-          <div className="px-5 pt-5 pb-3 text-center bg-gradient-to-b from-[#faf7ff] to-white">
-            <div className="text-[11px] text-zinc-500 mb-1">我的 AI 记忆 · powered by</div>
-            <div className="font-bold text-lg" style={{ fontFamily: "Georgia, serif" }}>
-              prompt<span className="text-[#7c3aed]">.</span>ai
+        {/* v17: Share Mode 顶部品牌头 (替代普通 header) — 包在 ref 里供 PNG 截图 */}
+        <div ref={shareCardRef} className="bg-white">
+          {shareMode && (
+            <div className="px-5 pt-5 pb-3 text-center bg-gradient-to-b from-[#faf7ff] to-white">
+              <div className="text-[11px] text-zinc-500 mb-1">我的 AI 记忆 · powered by</div>
+              <div className="font-bold text-lg" style={{ fontFamily: "Georgia, serif" }}>
+                prompt<span className="text-[#7c3aed]">.</span>ai
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
         {!user ? (
           <div className="py-12 text-center text-sm text-zinc-500 px-5">
@@ -602,16 +639,28 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
         )}
 
         {/* ─── FOOTER ─────────────────────────────────────── */}
+        </div>
         <div className="border-t border-zinc-100 px-5 py-3 bg-zinc-50/50">
           {shareMode ? (
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => setShareMode(false)}
-              className="w-full text-xs h-8"
-            >
-              ← 退出截图模式
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleDownloadPng}
+                disabled={downloadingPng}
+                className="flex-1 text-xs h-8"
+              >
+                {downloadingPng ? "⏳ 生成中..." : "📥 下载分享图"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShareMode(false)}
+                className="text-xs h-8 px-3"
+              >
+                ← 退出
+              </Button>
+            </div>
           ) : (
             <Button variant="default" size="sm" onClick={onClose} className="w-full text-xs h-8">
               关闭
