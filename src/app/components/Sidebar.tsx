@@ -650,6 +650,7 @@ export default function Sidebar() {
     }
 
     const redirectURL = chrome.identity.getRedirectURL();  // https://EXT_ID.chromiumapp.org/
+    console.log("[prompt.ai oauth] expected redirectURL =", redirectURL);
     const { data } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
@@ -658,7 +659,11 @@ export default function Sidebar() {
         queryParams: { prompt: "select_account" },
       },
     });
-    if (!data?.url) return;
+    if (!data?.url) {
+      console.error("[prompt.ai oauth] supabase 没返 url, 检查 supabase auth 配置");
+      return;
+    }
+    console.log("[prompt.ai oauth] 跳转到:", data.url);
 
     try {
       const responseUrl = await new Promise<string>((resolve, reject) => {
@@ -674,23 +679,32 @@ export default function Sidebar() {
         );
       });
 
+      console.log("[prompt.ai oauth] 收到 callbackUrl =", responseUrl);
       // callbackUrl 形如 https://EXT_ID.chromiumapp.org/#access_token=...&refresh_token=...
       const hash = responseUrl.split("#")[1] || "";
       const params = new URLSearchParams(hash);
       const accessToken = params.get("access_token");
       const refreshToken = params.get("refresh_token");
       if (accessToken && refreshToken) {
-        await supabase.auth.setSession({
+        const { error } = await supabase.auth.setSession({
           access_token: accessToken,
           refresh_token: refreshToken,
         });
+        if (error) {
+          console.error("[prompt.ai oauth] setSession 失败:", error.message);
+        } else {
+          console.log("[prompt.ai oauth] ✓ 登录成功");
+          setShowAuthModal(false);
+        }
       } else {
-        // eslint-disable-next-line no-console
-        console.warn("[prompt.ai] OAuth missing tokens in callback:", responseUrl);
+        console.warn("[prompt.ai oauth] callbackUrl 里没有 access_token / refresh_token");
+        console.warn("[prompt.ai oauth] 这说明 Supabase 退回了 site_url 而不是用我们指定的 redirectTo");
+        console.warn("[prompt.ai oauth] 去 Supabase dashboard 加 https://*.chromiumapp.org/** 到 Redirect URLs");
+        console.warn("[prompt.ai oauth] 完整 callbackUrl:", responseUrl);
       }
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.warn("[prompt.ai] Google OAuth failed:", (e as Error)?.message);
+      console.warn("[prompt.ai oauth] launchWebAuthFlow 异常:", (e as Error)?.message);
     }
   };
 
