@@ -44,6 +44,7 @@ interface ProjectPrompt {
 interface ProjectsTabProps {
   user: User | null;
   lang: "zh" | "en";
+  onSendToTab?: (text: string) => Promise<"filled" | "copied" | "error">;
 }
 
 // 平台 emoji 映射 (复用 MemoryPanel 的逻辑)
@@ -81,7 +82,7 @@ function formatRelative(iso: string | null): string {
   return d.toLocaleDateString("zh-CN");
 }
 
-export function ProjectsTab({ user, lang }: ProjectsTabProps) {
+export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
   const [view, setView] = useState<"list" | "detail">("list");
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
@@ -99,6 +100,14 @@ export function ProjectsTab({ user, lang }: ProjectsTabProps) {
   // 删除确认 modal
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // v29: 项目简报状态
+  const [brief, setBrief] = useState<string | null>(null);
+  const [briefGeneratedAt, setBriefGeneratedAt] = useState<string | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefToast, setBriefToast] = useState("");
+
+  const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
 
   const loadProjects = useCallback(async () => {
     if (!user) return;
@@ -145,17 +154,79 @@ export function ProjectsTab({ user, lang }: ProjectsTabProps) {
     setSelectedProject(project);
     setView("detail");
     setLoading(true);
+    setBrief(null);
+    setBriefGeneratedAt(null);
+    setBriefToast("");
     try {
-      const { data } = await supabase.rpc("get_project_prompts", {
-        p_project_id: project.id,
-        p_limit: 100,
-      });
-      setProjectPrompts((data as ProjectPrompt[]) || []);
+      // 并行: 拉 prompts + 拉项目 meta (含 brief)
+      const [{ data: prompts }, { data: meta }] = await Promise.all([
+        supabase.rpc("get_project_prompts", { p_project_id: project.id, p_limit: 100 }),
+        supabase.rpc("get_project_meta", { p_project_id: project.id }),
+      ]);
+      setProjectPrompts((prompts as ProjectPrompt[]) || []);
+      const m = meta as any;
+      if (m && m.brief) {
+        setBrief(m.brief);
+        setBriefGeneratedAt(m.brief_generated_at || null);
+      }
     } catch (e) {
       setErrMsg((e as Error)?.message || "加载项目内容失败");
     } finally {
       setLoading(false);
     }
+  };
+
+  // v29: 生成 / 重新生成项目简报
+  const handleGenerateBrief = async () => {
+    if (!selectedProject || briefLoading) return;
+    if (projectPrompts.length === 0) {
+      setBriefToast("⚠ 项目里还没有 prompts,先归类一些再生成");
+      setTimeout(() => setBriefToast(""), 3000);
+      return;
+    }
+    setBriefLoading(true);
+    setBriefToast("");
+    try {
+      const res = await fetch(`${API_URL}/synthesize-project-brief`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_name: selectedProject.name,
+          project_description: selectedProject.description,
+          prompts: projectPrompts.slice(0, 20).map(p => ({
+            original_text: p.original_text,
+            optimized_text: p.optimized_text,
+            task_type: p.task_type,
+            platform: p.platform,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (data?.brief && typeof data.brief === "string") {
+        // 保存到 DB
+        await supabase.rpc("set_project_brief", {
+          p_project_id: selectedProject.id,
+          p_brief: data.brief,
+        });
+        setBrief(data.brief);
+        setBriefGeneratedAt(new Date().toISOString());
+        setBriefToast("✓ 简报已生成");
+      } else {
+        setBriefToast(`✗ ${data?.error || "生成失败"}`);
+      }
+    } catch (e) {
+      setBriefToast(`✗ ${(e as Error)?.message || "网络错误"}`);
+    } finally {
+      setBriefLoading(false);
+      setTimeout(() => setBriefToast(""), 4000);
+    }
+  };
+
+  const handleCopyBrief = () => {
+    if (!brief) return;
+    navigator.clipboard.writeText(brief);
+    setBriefToast("✓ 已复制 — 切到任意 AI 直接粘贴");
+    setTimeout(() => setBriefToast(""), 3000);
   };
 
   const handleDeleteProject = async () => {
@@ -227,6 +298,75 @@ export function ProjectsTab({ user, lang }: ProjectsTabProps) {
           <div className="text-xs text-red-500 bg-red-50 border border-red-200 rounded px-3 py-2 mb-3">{errMsg}</div>
         )}
 
+        {/* v29: 📋 项目简报 */}
+        <section className="rounded-xl border border-[#e0d3f9] bg-gradient-to-br from-[#faf7ff] to-white p-3 mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-zinc-900 flex items-center gap-1.5">
+              <span>📋</span><span>项目简报</span>
+            </h3>
+            {briefGeneratedAt && (
+              <span className="text-[10px] text-zinc-400">
+                {formatRelative(briefGeneratedAt)} 更新
+              </span>
+            )}
+          </div>
+          {brief ? (
+            <>
+              <p className="text-[12.5px] text-zinc-700 leading-relaxed mb-2" style={{ fontFamily: "Georgia, serif" }}>
+                {brief}
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleCopyBrief}
+                  className="text-[11px] h-7 px-3 bg-[#5d3eb8] hover:bg-[#7c3aed]"
+                >
+                  📋 复制简报到剪贴板
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={briefLoading}
+                  onClick={handleGenerateBrief}
+                  className="text-[11px] h-7 px-3"
+                >
+                  {briefLoading ? "🪄 生成中..." : "🔄 重新生成"}
+                </Button>
+                {briefToast && (
+                  <span className={`text-[10.5px] ${briefToast.startsWith("✓") ? "text-green-600" : "text-amber-600"}`}>
+                    {briefToast}
+                  </span>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-[11.5px] text-zinc-500 leading-relaxed mb-2">
+                让 AI 自动总结这个项目的主题、你的风格偏好、常用术语 — 切到新 AI 工具时一键复制粘贴,新 AI 立刻 onboard。
+              </p>
+              <Button
+                variant="default"
+                size="sm"
+                disabled={briefLoading || projectPrompts.length === 0}
+                onClick={handleGenerateBrief}
+                className="text-[11px] h-7 px-3 bg-[#5d3eb8] hover:bg-[#7c3aed]"
+              >
+                {briefLoading
+                  ? "🪄 生成中..."
+                  : projectPrompts.length === 0
+                  ? "🚫 项目还没 prompt 可总结"
+                  : `🪄 生成项目简报 (基于 ${Math.min(projectPrompts.length, 20)} 条 prompt)`}
+              </Button>
+              {briefToast && (
+                <span className={`text-[10.5px] ml-2 ${briefToast.startsWith("✓") ? "text-green-600" : "text-amber-600"}`}>
+                  {briefToast}
+                </span>
+              )}
+            </>
+          )}
+        </section>
+
         {/* Prompts 时间线 */}
         <h3 className="text-[11px] font-semibold text-zinc-600 uppercase tracking-wide mb-2">
           📅 prompts 时间线
@@ -265,6 +405,23 @@ export function ProjectsTab({ user, lang }: ProjectsTabProps) {
                   <p className="text-[11.5px] text-zinc-500 mt-1 line-clamp-1">
                     → {p.optimized_text.split("\n")[0]}
                   </p>
+                )}
+                {/* v27: 一键发到当前 AI tab */}
+                {onSendToTab && (p.optimized_text || p.original_text) && (
+                  <div className="flex justify-end mt-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const text = p.optimized_text || p.original_text;
+                        onSendToTab(text);
+                      }}
+                      className="text-[10.5px] text-white bg-[#18181b] hover:bg-[#2a2a30] px-2 py-0.5 rounded transition-colors"
+                      title="发到当前 AI 网页输入框"
+                    >
+                      ↗ 发送到当前 AI
+                    </button>
+                  </div>
                 )}
               </motion.div>
             ))}

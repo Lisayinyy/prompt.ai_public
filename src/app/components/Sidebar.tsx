@@ -790,6 +790,8 @@ export default function Sidebar() {
   const [optimizedIsStarred, setOptimizedIsStarred] = useState<boolean>(false);
   const [showProjectMenu, setShowProjectMenu] = useState<boolean>(false);
   const [assignToast, setAssignToast] = useState<string>("");
+  // v28: 自动归类建议
+  const [projectSuggestion, setProjectSuggestion] = useState<{ id: string; name: string; color: string | null; sim: number } | null>(null);
 
   // v26: 加载用户项目列表 (供 optimize "加入项目" dropdown 用)
   const loadUserProjects = useCallback(async () => {
@@ -1360,6 +1362,7 @@ export default function Sidebar() {
     setOptimizedIsStarred(false); // v26: 新优化清星标
     setShowProjectMenu(false);
     setAssignToast("");
+    setProjectSuggestion(null); // v28: 清旧建议
 
     const currentInput = inputText.trim();
 
@@ -1447,6 +1450,25 @@ export default function Sidebar() {
             // v10: fire-and-forget — 累计够 10 条新 prompt 就触发 LLM 事实抽取
             // 不阻塞 UI,失败静默。新事实会在下次 loadUserMemory 时被拿到
             maybeExtractFacts();
+            // v28: 自动项目归类建议 (基于 embedding 相似度,从已有项目找最匹配的)
+            if (queryEmbedding) {
+              supabase.rpc("suggest_projects_for_prompt", {
+                p_user_id: user.id,
+                p_query_embedding: queryEmbedding,
+                p_limit: 1,
+                p_min_similarity: 0.55,
+              }).then(({ data: sug }) => {
+                const top = Array.isArray(sug) && sug[0];
+                if (top && top.project_id) {
+                  setProjectSuggestion({
+                    id: top.project_id,
+                    name: top.project_name,
+                    color: top.project_color,
+                    sim: Number(top.max_similarity) || 0,
+                  });
+                }
+              }).catch(() => {});
+            }
           }
         }).catch(() => {});
       }
@@ -2456,6 +2478,48 @@ export default function Sidebar() {
                           {optimizedText}
                         </div>
                       </div>
+                      {/* v28: 自动项目归类建议 banner */}
+                      {user && projectSuggestion && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.25 }}
+                          className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-gradient-to-r from-[#faf7ff] to-white border border-[#e0d3f9]"
+                        >
+                          <span className="text-base">💡</span>
+                          <div className="flex-1 text-[11.5px] text-[#5d3eb8] leading-snug">
+                            看起来属于
+                            <span
+                              className="inline-flex items-center gap-1 mx-1 px-1.5 py-0.5 rounded font-semibold"
+                              style={{ background: (projectSuggestion.color || "#7c3aed") + "20", color: projectSuggestion.color || "#7c3aed" }}
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ background: projectSuggestion.color || "#7c3aed" }} />
+                              {projectSuggestion.name}
+                            </span>
+                            ({Math.round(projectSuggestion.sim * 100)}% 匹配)
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              assignOptimizedToProject(projectSuggestion.id, projectSuggestion.name);
+                              setProjectSuggestion(null);
+                            }}
+                            className="px-2 py-0.5 rounded-md text-[10.5px] bg-[#5d3eb8] text-white hover:bg-[#7c3aed] transition-colors"
+                          >
+                            ✓ 加入
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setProjectSuggestion(null)}
+                            className="px-1 text-[#a78bfa] hover:text-[#5d3eb8] text-[12px]"
+                            title="忽略"
+                          >
+                            ✕
+                          </button>
+                        </motion.div>
+                      )}
+
                       {/* v26: ⭐ 收藏 + 📁 加入项目 */}
                       {user && (
                         <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -2531,6 +2595,23 @@ export default function Sidebar() {
                               {assignToast}
                             </span>
                           )}
+                          {/* v27: 一键发到当前 AI tab */}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const result = await fillTextToChat(optimizedText);
+                              setAssignToast(
+                                result === "filled" ? "✓ 已发到当前 AI tab" :
+                                result === "copied" ? "✓ 已复制 (当前页面没识别到输入框)" :
+                                "✗ 发送失败"
+                              );
+                              setTimeout(() => setAssignToast(""), 2500);
+                            }}
+                            className="ml-auto inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[10.5px] bg-[#18181b] text-white hover:bg-[#2a2a30] transition-colors"
+                            title="把这条优化版直接发到当前打开的 AI 网页输入框"
+                          >
+                            ↗ 发送到当前 AI
+                          </button>
                         </div>
                       )}
                     <div className="flex items-center gap-3 mt-3">
@@ -3049,13 +3130,27 @@ export default function Sidebar() {
                                             <span className="text-[11px] text-[#8b8b9e] uppercase tracking-[0.3px]" style={{ fontWeight: 500 }}>
                                               {t("optimized")}
                                             </span>
-                                            <button
-                                              onClick={(e) => { e.stopPropagation(); handleCopy(item.optimized_text!); }}
-                                              className="flex items-center gap-1 text-[10.5px] text-[#8b8b9e] hover:text-[#18181b] bg-[#f4f4f6] hover:bg-[#ebebf0] px-2 py-0.5 rounded transition-colors"
-                                            >
-                                              <Copy size={10} />
-                                              {t("copy")}
-                                            </button>
+                                            <div className="flex items-center gap-1">
+                                              <button
+                                                onClick={(e) => { e.stopPropagation(); handleCopy(item.optimized_text!); }}
+                                                className="flex items-center gap-1 text-[10.5px] text-[#8b8b9e] hover:text-[#18181b] bg-[#f4f4f6] hover:bg-[#ebebf0] px-2 py-0.5 rounded transition-colors"
+                                              >
+                                                <Copy size={10} />
+                                                {t("copy")}
+                                              </button>
+                                              {/* v27: 一键发到当前 AI tab */}
+                                              <button
+                                                onClick={async (e) => {
+                                                  e.stopPropagation();
+                                                  if (!item.optimized_text) return;
+                                                  await fillTextToChat(item.optimized_text);
+                                                }}
+                                                className="flex items-center gap-1 text-[10.5px] text-white bg-[#18181b] hover:bg-[#2a2a30] px-2 py-0.5 rounded transition-colors"
+                                                title="发到当前 AI 网页"
+                                              >
+                                                ↗ 发送
+                                              </button>
+                                            </div>
                                           </div>
                                           <div className="relative">
                                             <div className="absolute top-0 left-0 w-[2.5px] h-full bg-[#18181b] rounded-full" />
@@ -3571,7 +3666,7 @@ export default function Sidebar() {
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.15 }}
             >
-              <ProjectsTab user={user} lang={lang as "zh" | "en"} />
+              <ProjectsTab user={user} lang={lang as "zh" | "en"} onSendToTab={fillTextToChat} />
             </motion.div>
           )}
 

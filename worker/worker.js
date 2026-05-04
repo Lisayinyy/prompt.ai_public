@@ -1303,6 +1303,100 @@ OUTPUT: ONLY the voice profile paragraph itself. No JSON, no markdown wrapper, n
       }
     }
 
+    // ─── /synthesize-project-brief 路由 (v29) ─────────────────
+    // 给项目生成一段简报: 主题 + 用户在该项目里的风格 + 常用术语
+    // 用户切到新 AI 工具时,一键复制这段贴进去 = 立刻 onboard 项目 context
+    if (url.pathname === "/synthesize-project-brief") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const { project_name, project_description, prompts } = await request.json();
+        if (!project_name || typeof project_name !== "string") {
+          return new Response(JSON.stringify({ error: "project_name required" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+        if (!Array.isArray(prompts) || prompts.length === 0) {
+          return new Response(JSON.stringify({ error: "prompts array required" }), {
+            status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        // 整理 prompts (按时间倒序,take recent 20)
+        const recent = prompts.slice(0, 20);
+        const sample = recent.map((p, i) => {
+          const orig = String(p?.original_text || "").slice(0, 200);
+          const opt = String(p?.optimized_text || "").slice(0, 300);
+          const tt = String(p?.task_type || "general").slice(0, 30);
+          const plat = String(p?.platform || "").slice(0, 30);
+          return `[${i + 1}] ${plat ? `(${plat}) ` : ""}task=${tt}\n  original: ${orig}${opt ? `\n  optimized: ${opt}` : ""}`;
+        }).join("\n\n");
+
+        const BRIEF_SYSTEM_PROMPT = `You are a "project brief synthesizer" for a personal AI memory system. Given a project name + the user's recent prompts in this project, write a 200-400 character Chinese narrative that contains:
+
+1. 项目主题: 这个项目究竟在做什么 (1 句话)
+2. 用户偏好风格: 在该项目里用户偏好的写作风格/语气/格式 (1-2 句话)
+3. 常用术语/关键词: 在该项目里频繁出现的术语 (一句话列举)
+4. (可选) 当前阶段或下一步重点
+
+OUTPUT REQUIREMENTS:
+1. 输出纯叙事段落,不用 markdown / 不用列表 / 不用编号
+2. 第二人称写 ("你正在做..." / "你偏好...")
+3. 中文输出
+4. 总长 200-400 字符 (严格)
+5. 不要寒暄,不要 "总结:" / "项目简报:" 之类元说明
+6. 这段话会被用户直接复制粘贴到新 AI 工具,所以要写成 "对 AI 说话" 的语气
+
+EXAMPLE OUTPUT:
+"你正在做「创业公司官网」项目,核心在打磨产品落地页文案 + 视觉设计方案。在这个项目里你偏好简洁直接的措辞,不超过 200 字邮件,Markdown 结构化的需求文档。常涉及的术语: 落地页 conversion / hero section / CTA / 转化漏斗 / A/B 测试。当前阶段在评审第二版视觉稿,下一步计划做用户测试。"
+
+OUTPUT: ONLY the narrative paragraph itself.`;
+
+        const userMsg = `项目名: ${project_name}${project_description ? `\n项目描述: ${project_description}` : ""}\n\n该项目里最近的 ${recent.length} 条 prompt 记录:\n\n${sample}`;
+
+        const minimaxPayload = {
+          model: MODEL,
+          messages: [
+            { role: "system", content: BRIEF_SYSTEM_PROMPT },
+            { role: "user", content: userMsg },
+          ],
+          temperature: 0.5,
+          max_tokens: 800,
+        };
+
+        const { response: apiResponse, lastErrorText, lastStatus } = await callMiniMaxWithRetry(env, minimaxPayload);
+
+        if (!apiResponse.ok) {
+          console.error("Project brief LLM error:", lastStatus, lastErrorText);
+          return new Response(JSON.stringify({ error: "Brief LLM failed", upstreamStatus: lastStatus }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        const data = await apiResponse.json();
+        const rawContent = data.choices?.[0]?.message?.content || "";
+        const cleaned = cleanModelOutput(rawContent).trim();
+
+        if (cleaned.length < 50 || cleaned.length > 5000) {
+          return new Response(JSON.stringify({ error: "Brief length out of range", got_length: cleaned.length, preview: cleaned.slice(0, 200) }), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ brief: cleaned, source_prompts_count: recent.length }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error("Project brief error:", err);
+        return new Response(JSON.stringify({ error: "Server error", message: err?.message?.slice(0, 200) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // ─── /translate-style 路由 (v16): 把 prompt 转成另一个 AI 平台的最佳风格 ──
     // 比赛级演示功能: "把这条 ChatGPT 风格 prompt 转成 Claude 风格"
     // 4 平台 style guides 显式区分,LLM 输出适配后的版本
