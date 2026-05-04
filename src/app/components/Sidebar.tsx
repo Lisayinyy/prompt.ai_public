@@ -792,6 +792,73 @@ export default function Sidebar() {
   const [assignToast, setAssignToast] = useState<string>("");
   // v28: 自动归类建议
   const [projectSuggestion, setProjectSuggestion] = useState<{ id: string; name: string; color: string | null; sim: number } | null>(null);
+  // v30: prompt 模板库
+  type PromptTemplate = {
+    id: string;
+    name: string;
+    template_text: string;
+    variables: string[];
+    use_count: number;
+    created_at: string;
+    updated_at: string;
+  };
+  const [historyView, setHistoryView] = useState<"history" | "templates">("history");
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [showSaveTemplateFor, setShowSaveTemplateFor] = useState<string | null>(null); // prompt_id
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [savingTemplate, setSavingTemplate] = useState(false);
+
+  const loadTemplates = useCallback(async () => {
+    if (!user) return;
+    setTemplatesLoading(true);
+    try {
+      const { data } = await supabase.rpc("list_user_templates", { p_user_id: user.id });
+      setTemplates((data as PromptTemplate[]) || []);
+    } catch {} finally {
+      setTemplatesLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (isLoggedIn && activeTab === "history" && historyView === "templates") {
+      loadTemplates();
+    }
+  }, [isLoggedIn, activeTab, historyView, loadTemplates]);
+
+  const handleSaveAsTemplate = async (promptId: string) => {
+    if (!user || !newTemplateName.trim() || savingTemplate) return;
+    setSavingTemplate(true);
+    try {
+      await supabase.rpc("save_prompt_as_template", {
+        p_prompt_id: promptId,
+        p_name: newTemplateName.trim(),
+        p_use_optimized: true,
+      });
+      setShowSaveTemplateFor(null);
+      setNewTemplateName("");
+      // 不切换视图,但加载下次进 templates 时就能看到
+    } catch {} finally {
+      setSavingTemplate(false);
+    }
+  };
+
+  const handleUseTemplate = async (tpl: PromptTemplate) => {
+    setInputText(tpl.template_text);
+    setActiveTab("optimize");
+    try {
+      await supabase.rpc("increment_template_use", { p_template_id: tpl.id });
+    } catch {}
+  };
+
+  const handleDeleteTemplate = async (id: string) => {
+    setTemplates(prev => prev.filter(t => t.id !== id)); // optimistic
+    try {
+      await supabase.rpc("delete_template", { p_template_id: id });
+    } catch {
+      loadTemplates(); // 失败回滚
+    }
+  };
 
   // v26: 加载用户项目列表 (供 optimize "加入项目" dropdown 用)
   const loadUserProjects = useCallback(async () => {
@@ -2911,11 +2978,107 @@ export default function Sidebar() {
                         </div>
                       </div>
                       <div className="px-2 py-1 rounded-full bg-white text-[10.5px] text-[#6f6682] border border-[#ece7f4]">
-                        {realHistory.length}
+                        {historyView === "templates" ? `${templates.length} 模板` : `${realHistory.length}`}
                       </div>
                     </div>
                     <p className="text-[11.5px] text-[#8b8b9e]">{t("historyAssetHint")}</p>
                   </div>
+
+                  {/* v30: View mode toggle 历史 vs 模板 */}
+                  <div className="flex items-center gap-1.5 mb-3">
+                    {[
+                      { value: "history", label: "📜 历史", count: null as null | number },
+                      { value: "templates", label: "📚 模板", count: templates.length },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setHistoryView(opt.value as "history" | "templates")}
+                        className={`flex-1 px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
+                          historyView === opt.value
+                            ? "bg-[#18181b] text-white border-[#18181b]"
+                            : "bg-white text-[#6f6682] border-[#e7e1ef] hover:border-[#c0c0cc]"
+                        }`}
+                      >
+                        {opt.label}
+                        {opt.count !== null && opt.count > 0 && (
+                          <span className={`ml-1 ${historyView === opt.value ? "opacity-70" : "text-[#c0c0cc]"}`}>
+                            ({opt.count})
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* v30: Templates view */}
+                  {historyView === "templates" ? (
+                    <div>
+                      {templatesLoading ? (
+                        <div className="py-8 text-center text-[12px] text-zinc-400">加载模板中...</div>
+                      ) : templates.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-zinc-200 px-3 py-6 text-center">
+                          <div className="text-3xl mb-2">📚</div>
+                          <p className="text-[12.5px] text-zinc-700 mb-1 font-medium">还没有模板</p>
+                          <p className="text-[11px] text-zinc-500 leading-relaxed mb-3">
+                            在「📜 历史」里展开任意 prompt → 点 [💾 存为模板]<br/>
+                            把好用的 prompt 存成模板,下次一键复用
+                          </p>
+                          <p className="text-[10.5px] text-zinc-400">
+                            💡 模板支持 {"{{变量}}"} 占位符,使用时一键替换
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {templates.map(tpl => (
+                            <motion.div
+                              key={tpl.id}
+                              initial={{ opacity: 0, y: 4 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="rounded-lg border border-zinc-200 bg-white hover:border-zinc-300 transition-colors p-3"
+                            >
+                              <div className="flex items-center justify-between mb-1.5">
+                                <h4 className="text-[13px] font-semibold text-zinc-900 flex items-center gap-1.5">
+                                  📄 {tpl.name}
+                                </h4>
+                                <span className="text-[10.5px] text-zinc-400">
+                                  用了 {tpl.use_count} 次
+                                </span>
+                              </div>
+                              <p className="text-[11.5px] text-zinc-600 line-clamp-2 mb-2 leading-relaxed">
+                                {tpl.template_text.slice(0, 120)}{tpl.template_text.length > 120 ? "…" : ""}
+                              </p>
+                              {tpl.variables.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mb-2">
+                                  {tpl.variables.map(v => (
+                                    <span key={v} className="text-[10px] bg-[#faf7ff] text-[#5d3eb8] px-1.5 py-0.5 rounded border border-[#e0d3f9]">
+                                      {`{{${v}}}`}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  variant="default"
+                                  size="sm"
+                                  onClick={() => handleUseTemplate(tpl)}
+                                  className="flex-1 text-[11px] h-7"
+                                >
+                                  ↗ 使用模板
+                                </Button>
+                                <button
+                                  onClick={() => handleDeleteTemplate(tpl.id)}
+                                  className="text-[11px] text-zinc-400 hover:text-red-500 px-2 py-1"
+                                  title="删除模板"
+                                >
+                                  🗑️
+                                </button>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
 
                   {/* 搜索框 */}
                   <div className="relative mb-3">
@@ -3150,6 +3313,32 @@ export default function Sidebar() {
                                               >
                                                 ↗ 发送
                                               </button>
+                                              {/* v30: 存为模板 */}
+                                              <button
+                                                onClick={async (e) => {
+                                                  e.stopPropagation();
+                                                  if (typeof window === "undefined") return;
+                                                  const name = window.prompt(
+                                                    "给这个模板起个名字 (它会被存到 📚 模板库,以后可以一键复用)",
+                                                    item.original_text.slice(0, 50),
+                                                  );
+                                                  if (!name || !name.trim()) return;
+                                                  try {
+                                                    await supabase.rpc("save_prompt_as_template", {
+                                                      p_prompt_id: item.id,
+                                                      p_name: name.trim().slice(0, 100),
+                                                      p_use_optimized: true,
+                                                    });
+                                                    // 切到 templates 视图让用户看到刚存的
+                                                    setHistoryView("templates");
+                                                    loadTemplates();
+                                                  } catch {}
+                                                }}
+                                                className="flex items-center gap-1 text-[10.5px] text-[#5d3eb8] bg-[#faf7ff] hover:bg-[#f0eaff] border border-[#e0d3f9] px-2 py-0.5 rounded transition-colors"
+                                                title="把这条 prompt 存为模板,后续一键复用"
+                                              >
+                                                💾 模板
+                                              </button>
                                             </div>
                                           </div>
                                           <div className="relative">
@@ -3189,6 +3378,8 @@ export default function Sidebar() {
                         </div>
                       ))}
                     </div>
+                  )}
+                    </>
                   )}
                 </>
               )}
