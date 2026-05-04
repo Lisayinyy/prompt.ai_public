@@ -99,6 +99,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   const [state, setState] = useState<ExtractionState | null>(null);
   const [platforms, setPlatforms] = useState<PlatformRow[]>([]);
   const [sourceBreakdown, setSourceBreakdown] = useState<{ optimize: number; silent_capture: number; manual: number } | null>(null);
+  // v33-α: 项目活跃 + 模板使用排行 (兑现 pitch 承诺)
+  const [topProjects, setTopProjects] = useState<Array<{ id: string; name: string; color: string | null; prompt_count: number; last_activity: string | null }>>([]);
+  const [topTemplates, setTopTemplates] = useState<Array<{ id: string; name: string; use_count: number; variables: string[] }>>([]);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [captureEnabled, setCaptureEnabled] = useState<boolean>(true);
   const [shareMode, setShareMode] = useState<boolean>(false); // v17: 截图分享模式
@@ -111,12 +114,18 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
   // v21: PNG 分享卡下载状态
   const [downloadingPng, setDownloadingPng] = useState<boolean>(false);
   const shareCardRef = useRef<HTMLDivElement>(null);
+  // v32-E: 9:16 竖版故事图状态
+  const [downloadingStoryPng, setDownloadingStoryPng] = useState<boolean>(false);
+  const storyCardRef = useRef<HTMLDivElement>(null);
   // v22: 数据导出 + 删除账号状态
   const [exporting, setExporting] = useState<boolean>(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState<boolean>(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState<string>("");
   const [deleting, setDeleting] = useState<boolean>(false);
   const [dataToast, setDataToast] = useState<string>("");
+  // v33-η: 清除示例数据状态
+  const [clearingDemo, setClearingDemo] = useState<boolean>(false);
+  const [clearDemoToast, setClearDemoToast] = useState<string>("");
 
   // chrome.storage 同步 captureEnabled
   useEffect(() => {
@@ -218,6 +227,32 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
     }
   };
 
+  // v32-E: 9:16 竖版故事图下载 — 适合社媒 (小红书/IG/朋友圈)
+  const handleDownloadStoryPng = async () => {
+    if (!storyCardRef.current || downloadingStoryPng) return;
+    setDownloadingStoryPng(true);
+    try {
+      const dataUrl = await toPng(storyCardRef.current, {
+        pixelRatio: 2,
+        backgroundColor: "#0a0418",
+        cacheBust: true,
+        width: 720,
+        height: 1280,
+      });
+      const link = document.createElement("a");
+      link.download = `prompt-ai-story-${new Date().toISOString().slice(0, 10)}.png`;
+      link.href = dataUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[prompt.ai] story PNG download failed:", e);
+    } finally {
+      setDownloadingStoryPng(false);
+    }
+  };
+
   // v22: 一键导出全部用户数据为 JSON
   const handleExportData = async () => {
     if (!user || exporting) return;
@@ -271,6 +306,34 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
     }
   };
 
+  // v33-η: 清除示例数据 (clear_demo_data RPC)
+  const handleClearDemo = async () => {
+    if (!user || clearingDemo) return;
+    if (typeof window !== "undefined" && !window.confirm(
+      "确定清除所有示例数据? 这会删除:\n- source='demo' 的全部 prompts\n- 名称以「示例」开头的项目和模板"
+    )) return;
+    setClearingDemo(true);
+    setClearDemoToast("");
+    try {
+      const { data, error } = await supabase.rpc("clear_demo_data");
+      if (error) throw error;
+      const r = (data || {}) as { ok?: boolean; prompts_deleted?: number; projects_deleted?: number; templates_deleted?: number; error?: string };
+      if (r.error) throw new Error(r.error);
+      const total = (r.prompts_deleted || 0) + (r.projects_deleted || 0) + (r.templates_deleted || 0);
+      if (total === 0) {
+        setClearDemoToast("ℹ 当前账号没有示例数据");
+      } else {
+        setClearDemoToast(`✓ 已清除 ${r.prompts_deleted}p / ${r.projects_deleted} 项目 / ${r.templates_deleted} 模板`);
+        await loadAll();
+      }
+    } catch (e) {
+      setClearDemoToast(`✗ 清除失败: ${(e as Error)?.message || "未知错误"}`);
+    } finally {
+      setClearingDemo(false);
+      setTimeout(() => setClearDemoToast(""), 5000);
+    }
+  };
+
   // v22: 删除账号 (永久,GDPR-ready)
   const handleDeleteAccount = async () => {
     if (deleteConfirmText !== "DELETE" || deleting) return;
@@ -313,7 +376,8 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
     setErrorMsg("");
     try {
       // 5 路并行: voice / facts / extraction state / source breakdown / platform breakdown
-      const [voiceRes, factsRes, stateRes, sourceRes, platformRes] = await Promise.all([
+      // v33-α: +2 路 — top projects + top templates
+      const [voiceRes, factsRes, stateRes, sourceRes, platformRes, projectsRes, templatesRes] = await Promise.all([
         supabase.rpc("get_user_voice_profile", { p_user_id: user.id }),
         supabase
           .from("user_facts")
@@ -326,6 +390,8 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
         supabase.rpc("get_extraction_state", { p_user_id: user.id }),
         supabase.rpc("get_prompt_source_breakdown", { p_user_id: user.id }),
         supabase.rpc("get_user_platform_breakdown", { p_user_id: user.id, p_days: 90 }),
+        supabase.rpc("list_user_projects", { p_user_id: user.id }),
+        supabase.rpc("list_user_templates", { p_user_id: user.id }),
       ]);
 
       const v = (voiceRes.data as any)?.voice_profile;
@@ -335,6 +401,27 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
       setState((stateRes.data as any) || null);
       setSourceBreakdown((sourceRes.data as any) || { optimize: 0, silent_capture: 0, manual: 0 });
       setPlatforms(Array.isArray(platformRes.data) ? (platformRes.data as any) : []);
+      // v33-α: 取前 5 项目 (按 last_activity desc) + 前 5 模板 (按 use_count desc)
+      const projects = Array.isArray(projectsRes.data) ? (projectsRes.data as any[]) : [];
+      setTopProjects(
+        projects
+          .filter(p => (p.prompt_count || 0) > 0)
+          .sort((a, b) => {
+            const ta = a.last_activity ? new Date(a.last_activity).getTime() : 0;
+            const tb = b.last_activity ? new Date(b.last_activity).getTime() : 0;
+            return tb - ta;
+          })
+          .slice(0, 5)
+          .map(p => ({ id: p.id, name: p.name, color: p.color, prompt_count: p.prompt_count, last_activity: p.last_activity }))
+      );
+      const templates = Array.isArray(templatesRes.data) ? (templatesRes.data as any[]) : [];
+      setTopTemplates(
+        templates
+          .filter(t => (t.use_count || 0) > 0)
+          .sort((a, b) => (b.use_count || 0) - (a.use_count || 0))
+          .slice(0, 5)
+          .map(t => ({ id: t.id, name: t.name, use_count: t.use_count, variables: t.variables || [] }))
+      );
     } catch (e) {
       setErrorMsg((e as Error)?.message || "加载失败");
     } finally {
@@ -671,6 +758,75 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               )}
             </motion.section>
 
+            {/* v33-α: 📁 项目活跃度 + 📚 模板使用 Top 5 (兑现 pitch 承诺) */}
+            {(topProjects.length > 0 || topTemplates.length > 0) && (
+              <motion.section
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, delay: 0.12 }}
+                className="grid grid-cols-1 sm:grid-cols-2 gap-3"
+              >
+                {/* 项目活跃度 */}
+                {topProjects.length > 0 && (
+                  <div className="rounded-lg border border-zinc-200 bg-white p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-[12.5px] font-semibold text-zinc-900 flex items-center gap-1.5">
+                        <span>📁</span> <span>项目活跃度</span>
+                      </h3>
+                      <span className="text-[10px] text-zinc-400">最近活动</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {topProjects.map((p, idx) => (
+                        <div
+                          key={p.id}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-zinc-50 transition-colors"
+                        >
+                          <span className="text-[10.5px] text-zinc-400 tabular-nums w-4 text-right">{idx + 1}</span>
+                          <span
+                            className="w-2 h-2 rounded-full flex-shrink-0"
+                            style={{ background: p.color || "#7c3aed" }}
+                          />
+                          <span className="flex-1 text-[12px] text-zinc-700 truncate">{p.name}</span>
+                          <span className="text-[10.5px] text-zinc-400 tabular-nums">{p.prompt_count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 模板使用 Top 5 */}
+                {topTemplates.length > 0 && (
+                  <div className="rounded-lg border border-zinc-200 bg-white p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-[12.5px] font-semibold text-zinc-900 flex items-center gap-1.5">
+                        <span>📚</span> <span>模板 Top 5</span>
+                      </h3>
+                      <span className="text-[10px] text-zinc-400">按使用次数</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {topTemplates.map((t, idx) => (
+                        <div
+                          key={t.id}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[#faf7ff] transition-colors"
+                        >
+                          <span className="text-[10.5px] text-zinc-400 tabular-nums w-4 text-right">{idx + 1}</span>
+                          <span className="text-[12px] text-zinc-700 flex-1 truncate" title={t.name}>
+                            {t.name}
+                          </span>
+                          {t.variables.length > 0 && (
+                            <span className="text-[9.5px] text-[#5d3eb8] bg-[#faf7ff] border border-[#e0d3f9] px-1 rounded">
+                              {t.variables.length} var
+                            </span>
+                          )}
+                          <span className="text-[10.5px] text-zinc-400 tabular-nums">×{t.use_count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </motion.section>
+            )}
+
             {/* ─── ⚙️ 设置 ───────────────────────────────── */}
             <motion.section
               initial={{ opacity: 0, y: 8 }}
@@ -789,6 +945,24 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                     🗑️ 删除账号
                   </Button>
                 </div>
+                {/* v33-η: 清除示例数据 */}
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={clearingDemo}
+                    onClick={handleClearDemo}
+                    className="flex-1 text-xs h-7 border-amber-200 text-amber-700 hover:bg-amber-50"
+                    title="只删 source='demo' 的 prompts + 名称以「示例」开头的项目/模板,不影响你自己的内容"
+                  >
+                    {clearingDemo ? "🗑️ 清除中..." : "🗑️ 清除示例数据"}
+                  </Button>
+                </div>
+                {clearDemoToast && (
+                  <div className={`text-[11px] text-center ${clearDemoToast.startsWith("✓") ? "text-green-600" : clearDemoToast.startsWith("ℹ") ? "text-zinc-500" : "text-red-500"}`}>
+                    {clearDemoToast}
+                  </div>
+                )}
                 {dataToast && (
                   <div className={`text-[11px] text-center ${dataToast.startsWith("✓") ? "text-green-600" : "text-red-500"}`}>
                     {dataToast}
@@ -818,6 +992,132 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
 
         {/* ─── FOOTER ─────────────────────────────────────── */}
         </div>
+
+        {/* v32-E: 9:16 竖版故事图 — offscreen,只供 toPng 截图 */}
+        <div
+          ref={storyCardRef}
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            left: "-99999px",
+            top: 0,
+            width: "720px",
+            height: "1280px",
+            background: "linear-gradient(160deg, #0a0418 0%, #2a0e5a 35%, #5d3eb8 75%, #a78bfa 100%)",
+            color: "#fff",
+            fontFamily: "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif",
+            padding: "60px 56px",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            overflow: "hidden",
+            pointerEvents: "none",
+          }}
+        >
+          {/* 装饰光斑 */}
+          <div style={{ position: "absolute", top: "-120px", right: "-160px", width: "420px", height: "420px", borderRadius: "50%", background: "radial-gradient(circle, rgba(167,139,250,0.45), transparent 70%)", pointerEvents: "none" }} />
+          <div style={{ position: "absolute", bottom: "-180px", left: "-100px", width: "380px", height: "380px", borderRadius: "50%", background: "radial-gradient(circle, rgba(124,58,237,0.4), transparent 70%)", pointerEvents: "none" }} />
+
+          {/* HEADER */}
+          <div style={{ position: "relative" }}>
+            <div style={{ fontSize: "20px", fontWeight: 600, opacity: 0.7, letterSpacing: "1px" }}>
+              prompt<span style={{ color: "#fbbf24" }}>.</span>ai
+            </div>
+            <div style={{ marginTop: "12px", fontSize: "44px", fontWeight: 800, lineHeight: 1.15 }}>
+              我和 AI<br/>一起工作了
+            </div>
+            <div style={{ marginTop: "18px", display: "flex", alignItems: "baseline", gap: "12px" }}>
+              <span style={{ fontSize: "108px", fontWeight: 900, lineHeight: 1, letterSpacing: "-3px", color: "#fbbf24" }}>
+                {state?.total_prompts ?? 0}
+              </span>
+              <span style={{ fontSize: "32px", fontWeight: 600, opacity: 0.85 }}>条 prompt</span>
+            </div>
+            <div style={{ marginTop: "8px", fontSize: "18px", opacity: 0.65 }}>
+              横跨 {platforms.length} 个 AI 平台 · 沉淀 {state?.facts_count ?? 0} 条偏好
+            </div>
+          </div>
+
+          {/* MIDDLE — voice profile */}
+          <div style={{ position: "relative", margin: "32px 0" }}>
+            <div style={{ fontSize: "14px", fontWeight: 600, opacity: 0.65, letterSpacing: "1.5px", marginBottom: "12px" }}>
+              ✨ MY AI VOICE
+            </div>
+            <div
+              style={{
+                background: "rgba(255,255,255,0.08)",
+                borderRadius: "24px",
+                padding: "24px 26px",
+                fontSize: "20px",
+                lineHeight: 1.55,
+                fontStyle: "italic",
+                fontWeight: 400,
+                fontFamily: "Georgia, serif",
+                border: "1px solid rgba(255,255,255,0.12)",
+                backdropFilter: "blur(8px)",
+              }}
+            >
+              {voiceProfile
+                ? (voiceProfile.length > 165 ? voiceProfile.slice(0, 162) + "…" : voiceProfile)
+                : "继续用 prompt.ai,系统会自动学习你的声音指纹"}
+            </div>
+          </div>
+
+          {/* BOTTOM — top platforms + 水印 */}
+          <div style={{ position: "relative" }}>
+            {platforms.length > 0 && (
+              <>
+                <div style={{ fontSize: "14px", fontWeight: 600, opacity: 0.65, letterSpacing: "1.5px", marginBottom: "12px" }}>
+                  🌍 TOP PLATFORMS
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "26px" }}>
+                  {platforms.slice(0, 4).map((p) => {
+                    const display = getPlatformDisplay(p.platform);
+                    return (
+                      <div
+                        key={p.platform}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          background: "rgba(255,255,255,0.08)",
+                          borderRadius: "12px",
+                          padding: "10px 16px",
+                          border: "1px solid rgba(255,255,255,0.12)",
+                        }}
+                      >
+                        <span style={{ fontSize: "24px", marginRight: "12px" }}>{display.emoji}</span>
+                        <span style={{ fontSize: "18px", fontWeight: 600, flex: 1 }}>{display.name}</span>
+                        <span style={{ fontSize: "16px", fontWeight: 700, opacity: 0.9 }}>{p.count} 条</span>
+                        <span style={{ fontSize: "14px", marginLeft: "12px", opacity: 0.6, minWidth: "44px", textAlign: "right" }}>{p.percentage}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+            {/* 底部品牌 */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingTop: "20px",
+                borderTop: "1px solid rgba(255,255,255,0.18)",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: "12px", opacity: 0.55, letterSpacing: "1px" }}>POWERED BY</div>
+                <div style={{ fontSize: "22px", fontWeight: 800, marginTop: "4px" }}>
+                  prompt<span style={{ color: "#fbbf24" }}>.</span>ai
+                </div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: "11px", opacity: 0.55 }}>跨 22 平台 AI 第二大脑</div>
+                <div style={{ fontSize: "13px", fontWeight: 600, marginTop: "4px", color: "#fbbf24" }}>prompt-ai.work</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="border-t border-zinc-100 px-5 py-3 bg-zinc-50/50">
           {shareMode ? (
             <div className="flex items-center gap-2">
@@ -825,10 +1125,19 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 variant="default"
                 size="sm"
                 onClick={handleDownloadPng}
-                disabled={downloadingPng}
+                disabled={downloadingPng || downloadingStoryPng}
                 className="flex-1 text-xs h-8"
               >
-                {downloadingPng ? "⏳ 生成中..." : "📥 下载分享图"}
+                {downloadingPng ? "⏳ 生成中..." : "📥 横版"}
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleDownloadStoryPng}
+                disabled={downloadingPng || downloadingStoryPng}
+                className="flex-1 text-xs h-8 bg-[#5d3eb8] hover:bg-[#7c3aed]"
+              >
+                {downloadingStoryPng ? "⏳ 生成中..." : "📱 9:16 故事图"}
               </Button>
               <Button
                 variant="outline"

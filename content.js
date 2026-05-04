@@ -227,7 +227,8 @@
             "Content-Type": "application/json",
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": `Bearer ${jwt}`,
-            "Prefer": "return=minimal",
+            // v32-G: 拿回插入的行 id, 后续 patch ai_response_text
+            "Prefer": "return=representation",
           },
           body: JSON.stringify({
             user_id: userId,
@@ -238,7 +239,16 @@
           }),
         });
         if (res.ok) {
-          console.log(`[prompt.ai capture] ✓ saved to ${platform}`);
+          let promptId = null;
+          try {
+            const rows = await res.json();
+            promptId = Array.isArray(rows) && rows[0] ? rows[0].id : null;
+          } catch {}
+          console.log(`[prompt.ai capture] ✓ saved to ${platform} id=${promptId}`);
+          // v32-G / v33-δ: 4 家平台启动响应捕获 (ChatGPT + Claude + Kimi + DeepSeek)
+          if (promptId && (platform === "chatgpt" || platform === "claude" || platform === "kimi" || platform === "deepseek")) {
+            scheduleResponseCapture(promptId, platform);
+          }
           return;
         }
         // 401 = JWT 过期,不重试 (重试也没用)
@@ -254,6 +264,120 @@
       if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
     }
     console.error("[prompt.ai capture] ✗ all retries failed");
+  }
+
+  // ========= v32-G / v33-δ: AI 响应捕获 (ChatGPT + Claude + Kimi + DeepSeek) =========
+  // 选择器: 抓"最后一条 assistant 消息"的纯文本 — 每家放多个 fallback,DOM 改了至少一个能命中
+  const ASSISTANT_SELECTORS = {
+    chatgpt: [
+      "[data-message-author-role='assistant']",
+      "div[data-message-author-role='assistant']",
+    ],
+    claude: [
+      "div.font-claude-message",
+      "[data-testid^='message-content']",
+      "div.font-claude-response",
+    ],
+    // v33-δ: Kimi (kimi.com) — 用 markdown 容器 / role=assistant 多选择器兜底
+    kimi: [
+      "div[class*='assistant']",
+      "div[class*='answer-bubble']",
+      "div.markdown-container",
+      ".markdown-body:not(:has(textarea))",
+      "div[data-role='assistant']",
+    ],
+    // v33-δ: DeepSeek (chat.deepseek.com) — 同上多选择器兜底
+    deepseek: [
+      "div[class*='ds-markdown']",
+      "div[data-role='assistant']",
+      "div.markdown-body:not(:has(textarea))",
+      "div[class*='message-content'][class*='assistant']",
+    ],
+  };
+
+  function findLatestAssistantText(platform) {
+    const sels = ASSISTANT_SELECTORS[platform] || [];
+    for (const sel of sels) {
+      let nodes;
+      try { nodes = document.querySelectorAll(sel); } catch { continue; }
+      if (nodes && nodes.length > 0) {
+        const last = nodes[nodes.length - 1];
+        const text = (last.innerText || last.textContent || "").trim();
+        // 防误抓: 文本要长于 20 字 + 不能是输入框 placeholder
+        if (text.length > 20) return text;
+      }
+    }
+    return null;
+  }
+
+  // 调度: 在 prompt 入库后 ~3s 启动 watcher,polling 间隔 1.5s,直到文本稳定 3s 或 60s 超时
+  function scheduleResponseCapture(promptId, platform) {
+    let prevText = "";
+    let stableSince = 0;
+    let totalElapsed = 0;
+    const POLL_MS = 1500;
+    const STABLE_MS = 3000;
+    const TIMEOUT_MS = 60000;
+    const startDelay = 2500; // 给 AI 一点时间开始流式输出
+
+    setTimeout(function tick() {
+      totalElapsed += POLL_MS;
+      const text = findLatestAssistantText(platform);
+      if (text && text.length > 20) {
+        if (text === prevText) {
+          stableSince += POLL_MS;
+          if (stableSince >= STABLE_MS) {
+            // 稳定了 → 写回 DB
+            patchPromptResponse(promptId, text);
+            return;
+          }
+        } else {
+          prevText = text;
+          stableSince = 0;
+        }
+      }
+      if (totalElapsed >= TIMEOUT_MS) {
+        if (prevText) {
+          // 超时但有文本 → 也写,毕竟 demo 不能丢
+          console.warn(`[prompt.ai response] timeout but writing partial (${prevText.length} chars)`);
+          patchPromptResponse(promptId, prevText);
+        } else {
+          console.warn("[prompt.ai response] timeout no text, giving up");
+        }
+        return;
+      }
+      setTimeout(tick, POLL_MS);
+    }, startDelay);
+  }
+
+  async function patchPromptResponse(promptId, responseText) {
+    if (!jwt || !userId || !promptId) return;
+    const trimmed = String(responseText || "").trim().slice(0, 16000); // 上限 16K
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/prompts?id=eq.${promptId}&user_id=eq.${userId}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${jwt}`,
+            "Prefer": "return=minimal",
+          },
+          body: JSON.stringify({
+            ai_response_text: trimmed,
+            ai_response_captured_at: new Date().toISOString(),
+          }),
+        }
+      );
+      if (res.ok) {
+        console.log(`[prompt.ai response] ✓ captured ${trimmed.length} chars for prompt ${promptId}`);
+      } else {
+        console.warn(`[prompt.ai response] ✗ patch failed ${res.status}`);
+      }
+    } catch (err) {
+      console.warn("[prompt.ai response] patch error", err?.message);
+    }
   }
 
   // 输入框监听: 检测"清空"动作 = 用户发送了 prompt

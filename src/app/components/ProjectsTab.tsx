@@ -106,6 +106,9 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
   const [briefGeneratedAt, setBriefGeneratedAt] = useState<string | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefToast, setBriefToast] = useState("");
+  // v32-C: 后台 brief 预生成 — 项目级缓存状态
+  // ready=brief 已存在; generating=后台生成中; missing=没 brief 但有 prompts; empty=无 prompts 不生成; unknown=未检查
+  const [briefStatus, setBriefStatus] = useState<Record<string, "ready" | "generating" | "missing" | "empty" | "unknown">>({});
 
   const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
 
@@ -116,12 +119,100 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
     try {
       const { data, error } = await supabase.rpc("list_user_projects", { p_user_id: user.id });
       if (error) throw error;
-      setProjects((data as Project[]) || []);
+      const list = (data as Project[]) || [];
+      setProjects(list);
+
+      // v32-C: 后台扫描每个项目的 brief 状态,缺失的并行预生成 (最多 2 并发)
+      list.forEach(p => {
+        if (!briefStatus[p.id]) {
+          setBriefStatus(prev => ({ ...prev, [p.id]: "unknown" }));
+        }
+      });
+      void scanAndPregenerateBriefs(list);
     } catch (e) {
       setErrMsg((e as Error)?.message || "加载失败");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // v32-C: 扫描项目 brief 状态 + 并发预生成 (max 2)
+  const scanAndPregenerateBriefs = useCallback(async (list: Project[]) => {
+    if (!user || list.length === 0) return;
+    // 1) 拉所有项目 meta (并行)
+    const metas = await Promise.all(
+      list.map(p =>
+        supabase.rpc("get_project_meta", { p_project_id: p.id })
+          .then(({ data }) => ({ id: p.id, meta: data as any, project: p }))
+          .catch(() => ({ id: p.id, meta: null, project: p }))
+      )
+    );
+    // 2) 根据 meta 给每个项目分类
+    const newStatus: Record<string, "ready" | "missing" | "empty"> = {};
+    const needsGen: { id: string; project: Project }[] = [];
+    for (const { id, meta, project } of metas) {
+      if (meta?.brief && typeof meta.brief === "string" && meta.brief.length > 10) {
+        newStatus[id] = "ready";
+      } else if (project.prompt_count > 0) {
+        newStatus[id] = "missing";
+        needsGen.push({ id, project });
+      } else {
+        newStatus[id] = "empty";
+      }
+    }
+    setBriefStatus(prev => ({ ...prev, ...newStatus }));
+    if (needsGen.length === 0) return;
+
+    // 3) 限并发 2 跑 brief 生成
+    const CONCURRENCY = 2;
+    let cursor = 0;
+    const runOne = async (): Promise<void> => {
+      while (cursor < needsGen.length) {
+        const idx = cursor++;
+        const { id, project } = needsGen[idx];
+        setBriefStatus(prev => ({ ...prev, [id]: "generating" }));
+        try {
+          // 拉前 20 条 prompts
+          const { data: prompts } = await supabase.rpc("get_project_prompts", {
+            p_project_id: id,
+            p_limit: 20,
+          });
+          const ps = (prompts as ProjectPrompt[]) || [];
+          if (ps.length === 0) {
+            setBriefStatus(prev => ({ ...prev, [id]: "empty" }));
+            continue;
+          }
+          const res = await fetch(`${API_URL}/synthesize-project-brief`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              project_name: project.name,
+              project_description: project.description,
+              prompts: ps.map(p => ({
+                original_text: p.original_text,
+                optimized_text: p.optimized_text,
+                task_type: p.task_type,
+                platform: p.platform,
+              })),
+            }),
+          });
+          const data = await res.json();
+          if (data?.brief && typeof data.brief === "string") {
+            await supabase.rpc("set_project_brief", {
+              p_project_id: id,
+              p_brief: data.brief,
+            });
+            setBriefStatus(prev => ({ ...prev, [id]: "ready" }));
+          } else {
+            setBriefStatus(prev => ({ ...prev, [id]: "missing" }));
+          }
+        } catch {
+          setBriefStatus(prev => ({ ...prev, [id]: "missing" }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, needsGen.length) }, () => runOne()));
   }, [user]);
 
   useEffect(() => {
@@ -517,9 +608,30 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                     <h3 className="text-[13.5px] font-semibold text-zinc-900 group-hover:text-[#5d3eb8] transition-colors">
                       📁 {p.name}
                     </h3>
-                    <span className="text-[10.5px] text-zinc-400 tabular-nums">
-                      {p.prompt_count} 条
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {/* v32-C: brief 状态指示 */}
+                      {briefStatus[p.id] === "generating" && (
+                        <motion.span
+                          animate={{ rotate: 360 }}
+                          transition={{ duration: 1.4, repeat: Infinity, ease: "linear" }}
+                          className="text-[10px] text-[#5d3eb8]"
+                          title="正在生成项目简报..."
+                        >
+                          🪄
+                        </motion.span>
+                      )}
+                      {briefStatus[p.id] === "ready" && (
+                        <span
+                          className="text-[10px] text-emerald-500"
+                          title="简报已就绪 — 点开秒开"
+                        >
+                          ✨
+                        </span>
+                      )}
+                      <span className="text-[10.5px] text-zinc-400 tabular-nums">
+                        {p.prompt_count} 条
+                      </span>
+                    </div>
                   </div>
                   {p.description && (
                     <p className="text-[11px] text-zinc-500 mb-1 line-clamp-1">{p.description}</p>

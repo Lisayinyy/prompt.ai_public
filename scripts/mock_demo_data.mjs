@@ -114,6 +114,50 @@ const FACTS = [
 // 1 条 voice_profile (复用 v11 端到端合成的 222 字)
 const VOICE_PROFILE = "你正在为一位产品经理工作。Ta的沟通风格偏好直接说重点,不过度解释,避免冗余,整体语气专业但不夸张、不卑微,体现出一种适度的自信。在做邮件类任务时严格遵循「正式简洁、200字内、零emoji、专业但不卑微」的准则;在做分析类任务时偏好Markdown结构化输出,包含表格和总结段落,总字数控制在800字以内。Ta熟练使用OKR、KR、Sprint等企业管理术语,并自然融入中文表达。请把这套声音作为优化基线,除非当前input明确要求其他风格。";
 
+// v25: 3 个 demo 项目
+const PROJECTS = [
+  {
+    name: "创业公司官网",
+    description: "落地页文案 + 视觉设计 + 转化漏斗优化",
+    color: "#7c3aed",
+    brief: "你正在做「创业公司官网」项目,核心在打磨产品落地页文案 + 视觉设计方案。在这个项目里你偏好简洁直接的措辞,Markdown 结构化的需求文档,常涉及的术语: 落地页 conversion / hero section / CTA / 转化漏斗 / A/B 测试。当前阶段在评审第二版视觉稿,下一步计划做用户测试。",
+    prompt_indices: [0, 3, 4, 13, 16],
+  },
+  {
+    name: "用户调研报告",
+    description: "Q2 季度用户访谈 + 痛点提炼",
+    color: "#3b82f6",
+    brief: "你在做「用户调研报告」项目,基于 Q2 季度的用户访谈材料提炼痛点和机会。在这个项目里你偏好结构化分析(Eisenhower 矩阵 / JTBD 框架),Markdown 表格 + 总结段落,800 字内。常用术语: JTBD / pain point / job map / 用户旅程。下一步整理报告交给团队评审。",
+    prompt_indices: [2, 5, 14, 17],
+  },
+  {
+    name: "AI 产品分析",
+    description: "竞品对比 + 市场趋势研究",
+    color: "#10b981",
+    brief: "你正在做「AI 产品分析」项目,系统性对比国内外主流 AI 助手的产品定位、技术亮点、商业化路径。在这个项目里你偏好 Markdown 表格 + 量化数据 + 总结段落 (800 字内)。常用术语: MMLU / HumanEval / 上下文长度 / 推理能力 / 生态整合。下一步整理成可对外发布的分析报告。",
+    prompt_indices: [1, 9, 10, 26],
+  },
+];
+
+// v30: 3 个 demo 模板
+const TEMPLATES = [
+  {
+    name: "邮件 - 客户延期通知",
+    template_text: "你是产品经理。请撰写一封正式简洁的邮件给客户 {{client_name}},告知 {{project_name}} 项目延期 {{delay_days}} 个工作日。要求:开头致歉、说明根本原因、给出新交付时间 {{new_deadline}}、附补救方案。语气专业但不卑微,200 字内,不用 emoji。",
+    use_count: 12,
+  },
+  {
+    name: "PRD 框架重写",
+    template_text: "你是资深产品经理。请用以下结构重写需求文档 {{doc_topic}}:\n背景目标 → 用户场景 → 功能清单(P0/P1/P2)→ 验收标准 → 风险评估\nMarkdown 格式,{{word_count}} 字内,语气专业。",
+    use_count: 8,
+  },
+  {
+    name: "周报模板",
+    template_text: "你是高效产品经理。基于以下完成事项,生成本周周报:\n1) 本周关键进展(3-5条,带量化数据)\n2) 风险与阻塞 ({{focus_area}})\n3) 下周重点\n4) 需要支持\nMarkdown 表格 + 段落,400 字内。",
+    use_count: 5,
+  },
+];
+
 // ─────────────────────────────────────────────────────────────
 // EXECUTE
 // ─────────────────────────────────────────────────────────────
@@ -128,7 +172,9 @@ async function main() {
     { name: "user_voice_profiles", filter: { user_id: USER_ID } },
     { name: "user_facts",          filter: { user_id: USER_ID } },
     { name: "prompt_feedback",     filter: { user_id: USER_ID } },
+    { name: "prompt_templates",    filter: { user_id: USER_ID } },  // v30
     { name: "prompts",             filter: { user_id: USER_ID } },
+    { name: "projects",            filter: { user_id: USER_ID } },  // v25
   ];
   for (const tbl of cleanupTables) {
     const { error } = await supabase.from(tbl.name).delete().match(tbl.filter);
@@ -199,7 +245,82 @@ async function main() {
   }
   console.log("   ✓ voice profile inserted (222 chars, 6 source facts)");
 
+  // 5. v25 插 demo projects + 6. assign prompts to projects + 7. set project briefs
+  console.log("\n📁 Inserting demo projects + assigning prompts...");
+  const projectRows = PROJECTS.map(p => ({
+    user_id: USER_ID,
+    name: p.name,
+    description: p.description,
+    color: p.color,
+    brief: p.brief,
+    brief_generated_at: new Date(now - 6 * 60 * 60 * 1000).toISOString(),
+    created_at: new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    updated_at: new Date(now - 6 * 60 * 60 * 1000).toISOString(),
+  }));
+  const { data: projData, error: prjErr } = await supabase
+    .from("projects")
+    .insert(projectRows)
+    .select("id, name");
+  if (prjErr) {
+    console.error("   ❌", prjErr);
+    process.exit(1);
+  }
+  console.log(`   ✓ ${projectRows.length} projects inserted`);
+
+  // 拿刚插入 prompts 的 id (按 created_at 倒序对应 PROMPTS 数组顺序)
+  const { data: insertedPrompts } = await supabase
+    .from("prompts")
+    .select("id, created_at")
+    .eq("user_id", USER_ID)
+    .order("created_at", { ascending: true });
+  const promptIds = insertedPrompts?.map(p => p.id) || [];
+
+  // 给项目 assign prompts
+  for (let i = 0; i < PROJECTS.length; i++) {
+    const proj = PROJECTS[i];
+    const projId = projData?.[i]?.id;
+    if (!projId) continue;
+    const promptIdsToAssign = proj.prompt_indices.map(idx => promptIds[idx]).filter(Boolean);
+    if (promptIdsToAssign.length === 0) continue;
+    const { error: aErr } = await supabase
+      .from("prompts")
+      .update({ project_id: projId })
+      .in("id", promptIdsToAssign);
+    if (aErr) {
+      console.warn(`   ⚠️  assign 失败 ${proj.name}:`, aErr.message);
+    } else {
+      console.log(`   ✓ ${proj.name} ← ${promptIdsToAssign.length} prompts`);
+    }
+  }
+
+  // 8. v30 插 demo templates
+  console.log("\n📚 Inserting demo templates...");
+  const templateRows = TEMPLATES.map(t => {
+    // 提取 {{var}} 变量 (匹配 SQL 端的 _extract_template_variables 逻辑)
+    const matches = [...t.template_text.matchAll(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g)];
+    const variables = [...new Set(matches.map(m => m[1]))];
+    return {
+      user_id: USER_ID,
+      name: t.name,
+      template_text: t.template_text,
+      variables,
+      use_count: t.use_count,
+      created_at: new Date(now - 14 * 24 * 60 * 60 * 1000).toISOString(),
+      updated_at: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+  });
+  const { error: tErr } = await supabase.from("prompt_templates").insert(templateRows);
+  if (tErr) {
+    console.error("   ❌", tErr);
+    process.exit(1);
+  }
+  console.log(`   ✓ ${templateRows.length} templates inserted (with variable detection)`);
+
   console.log("\n🎉 Demo data ready! 重载 extension 看 dashboard 效果。\n");
+  console.log("   📊 30 prompts (12 平台,3 task) + 6 facts + 1 voice profile");
+  console.log("   📁 3 projects + 12 prompts assigned + briefs generated");
+  console.log("   📚 3 templates with {{var}} placeholders");
+  console.log("");
 }
 
 main().catch((e) => {

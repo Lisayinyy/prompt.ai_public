@@ -756,7 +756,7 @@ export default function Sidebar() {
     setIsGuest(false);
     setUser(null);
   };
-  const [expandedHistory, setExpandedHistory] = useState<number | null>(null);
+  const [expandedHistory, setExpandedHistory] = useState<string | null>(null);
 
   // ── 真实历史记录 ──
   type PromptRecord = {
@@ -774,6 +774,8 @@ export default function Sidebar() {
     score_specificity?: number | null;
     score_structure?: number | null;
     similarity?: number | null;
+    ai_response_text?: string | null;          // v32-G: 抓到的 AI 响应文本
+    ai_response_captured_at?: string | null;
     created_at: string;
   };
   const [realHistory, setRealHistory] = useState<PromptRecord[]>([]);
@@ -802,7 +804,7 @@ export default function Sidebar() {
     created_at: string;
     updated_at: string;
   };
-  const [historyView, setHistoryView] = useState<"history" | "templates">("history");
+  const [historyView, setHistoryView] = useState<"history" | "sessions" | "templates">("history");
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [showSaveTemplateFor, setShowSaveTemplateFor] = useState<string | null>(null); // prompt_id
@@ -860,6 +862,127 @@ export default function Sidebar() {
     }
   };
 
+  // v33-β: 模板编辑 — modal 状态 + 保存
+  const [editingTemplate, setEditingTemplate] = useState<PromptTemplate | null>(null);
+  const [editTplName, setEditTplName] = useState("");
+  const [editTplText, setEditTplText] = useState("");
+  const [editTplSaving, setEditTplSaving] = useState(false);
+  const [editTplToast, setEditTplToast] = useState("");
+  // v33-γ: ⌘K 全局命令面板
+  const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [cmdkQuery, setCmdkQuery] = useState("");
+  const [cmdkActiveIndex, setCmdkActiveIndex] = useState(0);
+  const handleOpenEditTemplate = (tpl: PromptTemplate) => {
+    setEditingTemplate(tpl);
+    setEditTplName(tpl.name);
+    setEditTplText(tpl.template_text);
+    setEditTplToast("");
+  };
+  const handleCloseEditTemplate = () => {
+    setEditingTemplate(null);
+    setEditTplName("");
+    setEditTplText("");
+    setEditTplToast("");
+    setEditTplSaving(false);
+  };
+  const handleSaveEditTemplate = async () => {
+    if (!editingTemplate || editTplSaving) return;
+    const trimmedName = editTplName.trim();
+    const trimmedText = editTplText.trim();
+    if (trimmedName.length < 1 || trimmedName.length > 100) {
+      setEditTplToast("✗ 名字 1-100 字");
+      return;
+    }
+    if (trimmedText.length < 5 || trimmedText.length > 8000) {
+      setEditTplToast("✗ 内容 5-8000 字");
+      return;
+    }
+    setEditTplSaving(true);
+    setEditTplToast("");
+    try {
+      const { error } = await supabase.rpc("update_template", {
+        p_template_id: editingTemplate.id,
+        p_name: trimmedName,
+        p_template_text: trimmedText,
+      });
+      if (error) throw error;
+      await loadTemplates();
+      setEditTplToast("✓ 已保存");
+      setTimeout(() => handleCloseEditTemplate(), 800);
+    } catch (err) {
+      setEditTplToast("✗ " + ((err as Error)?.message || "保存失败"));
+    } finally {
+      setEditTplSaving(false);
+    }
+  };
+
+  // v32-B: 一键加载示例数据 — 给新用户秒上手 (插入到当前账号,标 source: "demo")
+  const [seedingDemo, setSeedingDemo] = useState(false);
+  const [demoSeededToast, setDemoSeededToast] = useState("");
+  const handleSeedDemo = async () => {
+    if (!user || seedingDemo) return;
+    setSeedingDemo(true);
+    setDemoSeededToast("");
+    try {
+      // 1) 插入 1 个 demo 项目
+      const { data: project } = await supabase
+        .from("projects")
+        .insert({
+          user_id: user.id,
+          name: "示例项目 · 创业公司官网",
+          description: "这是 prompt.ai 给你的示例项目,展示如何把零散 prompt 归类管理",
+          color: "#7c3aed",
+        })
+        .select("id")
+        .single();
+      const projectId = project?.id || null;
+
+      // 2) 插入 5 条 demo prompt
+      const now = Date.now();
+      const demoPrompts = [
+        { o: "帮我写一封邮件给客户说项目要延期一周", p: "ChatGPT", task: "邮件", starred: true, withProject: true, ago: 0 },
+        { o: "怎么提高用户留存率", p: "ChatGPT", task: "策略", starred: false, withProject: true, ago: 1 },
+        { o: "写个产品 Hero 区文案,要简洁有冲击力", p: "Claude", task: "营销", starred: true, withProject: true, ago: 2 },
+        { o: "总结一下昨天的用户访谈,重点是 pain point", p: "Kimi", task: "调研", starred: false, withProject: false, ago: 3 },
+        { o: "对比 Notion / Obsidian / Roam 三个笔记工具的差异", p: "DeepSeek", task: "调研", starred: false, withProject: false, ago: 5 },
+      ];
+      const promptRows = demoPrompts.map((d) => ({
+        user_id: user.id,
+        original_text: d.o,
+        optimized_text: `# 角色\n你是一位资深产品经理。\n\n# 任务\n${d.o}\n\n# 输出要求\n- 200 字以内\n- 结构清晰,条理分明\n- 用平实语言,避免空话`,
+        diagnosis: "已优化",
+        platform: d.p,
+        task_type: d.task,
+        source: "demo",
+        is_starred: d.starred,
+        project_id: d.withProject ? projectId : null,
+        score_clarity: 85 + Math.floor(Math.random() * 10),
+        score_specificity: 80 + Math.floor(Math.random() * 12),
+        score_structure: 88 + Math.floor(Math.random() * 8),
+        created_at: new Date(now - d.ago * 86400000).toISOString(),
+      }));
+      await supabase.from("prompts").insert(promptRows);
+
+      // 3) 插入 1 个 demo 模板
+      await supabase.rpc("save_template_direct", {
+        p_name: "示例模板 · 客户延期通知邮件",
+        p_template_text:
+          "亲爱的 {{client_name}},\n\n关于 {{project_name}} 项目,因 {{reason}} 原因,预计延期 {{delay_days}} 天,新交付时间为 {{new_deadline}}。\n\n我们已制定补救方案,详情如下:\n1. ...\n2. ...\n\n感谢理解,有任何问题请随时联系。\n\n顺祝商祺",
+      });
+
+      // 4) 刷新所有相关数据
+      await Promise.all([fetchHistory(), loadUserProjects(), loadTemplates(), loadFacets()]);
+      setDemoSeededToast("✓ 已加载 5 条 prompt + 1 项目 + 1 模板,开始体验吧");
+      setTimeout(() => setDemoSeededToast(""), 4000);
+    } catch (err) {
+      console.error("[seed demo]", err);
+      setDemoSeededToast("✗ 加载失败,稍后再试");
+      setTimeout(() => setDemoSeededToast(""), 3000);
+    } finally {
+      setSeedingDemo(false);
+    }
+  };
+
   // v26: 加载用户项目列表 (供 optimize "加入项目" dropdown 用)
   const loadUserProjects = useCallback(async () => {
     if (!user) return;
@@ -875,6 +998,69 @@ export default function Sidebar() {
   useEffect(() => {
     if (isLoggedIn) loadUserProjects();
   }, [isLoggedIn, loadUserProjects]);
+
+  // v33-γ: 全局 ⌘K / Ctrl+K 监听 — 任何 tab 都能呼出命令面板
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCmdkOpen(prev => !prev);
+        setCmdkQuery("");
+        setCmdkActiveIndex(0);
+      }
+      if (e.key === "Escape" && cmdkOpen) {
+        setCmdkOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [cmdkOpen]);
+
+  // v33-γ: cmdk 搜索结果 — 跨 templates / projects / recent prompts
+  type CmdkItem =
+    | { kind: "template"; id: string; name: string; vars: number; useCount: number; raw: PromptTemplate }
+    | { kind: "project"; id: string; name: string; color: string | null }
+    | { kind: "prompt"; id: string; preview: string; platform: string | null }
+    | { kind: "action"; label: string; sub: string; onPick: () => void };
+  const cmdkResults = useMemo<CmdkItem[]>(() => {
+    const q = cmdkQuery.trim().toLowerCase();
+    const out: CmdkItem[] = [];
+    // 操作类 (无 query 时也显示常用快捷)
+    if (!q) {
+      out.push({ kind: "action", label: "🧠 打开 AI 记忆 dashboard", sub: "voice + 平台 + 偏好", onPick: () => { setMemoryPanelOpen(true); setCmdkOpen(false); } });
+      out.push({ kind: "action", label: "📁 切到项目 tab", sub: "管理你的 prompt folders", onPick: () => { setActiveTab("projects"); setCmdkOpen(false); } });
+      out.push({ kind: "action", label: "📚 切到模板 tab", sub: "复用高频 prompt", onPick: () => { setActiveTab("history"); setHistoryView("templates"); setCmdkOpen(false); } });
+      out.push({ kind: "action", label: "💬 切到会话视图", sub: "按对话浏览历史", onPick: () => { setActiveTab("history"); setHistoryView("sessions"); setCmdkOpen(false); } });
+    }
+    // Templates
+    for (const t of templates) {
+      if (!q || t.name.toLowerCase().includes(q) || (t.template_text || "").toLowerCase().includes(q)) {
+        out.push({ kind: "template", id: t.id, name: t.name, vars: t.variables.length, useCount: t.use_count, raw: t });
+      }
+      if (out.length >= 30) break;
+    }
+    // Projects
+    for (const p of userProjects) {
+      if (!q || p.name.toLowerCase().includes(q)) {
+        out.push({ kind: "project", id: p.id, name: p.name, color: p.color });
+      }
+      if (out.length >= 30) break;
+    }
+    // Recent prompts
+    if (q) {
+      for (const r of realHistory.slice(0, 50)) {
+        const text = (r.original_text || "").toLowerCase();
+        if (text.includes(q)) {
+          out.push({ kind: "prompt", id: r.id, preview: r.original_text.slice(0, 80), platform: r.platform });
+        }
+        if (out.length >= 50) break;
+      }
+    }
+    return out.slice(0, 50);
+  }, [cmdkQuery, templates, userProjects, realHistory]);
+
+  // 重置 active index 当结果变化
+  useEffect(() => { setCmdkActiveIndex(0); }, [cmdkQuery]);
 
   // v26: 切换 optimize 结果的星标
   const toggleOptimizedStar = async () => {
@@ -982,6 +1168,81 @@ export default function Sidebar() {
     setRealHistory((prev) => prev.filter((r) => r.id !== id));
   };
 
+  // v32-D: 把 query 的关键短语在结果中高亮 — 解决"为什么匹配"的可解释性
+  // 策略: query 切 2-6 字 ngram, 在 text 中找 longest non-overlapping matches, 包 <mark>
+  const highlightQueryInText = useCallback((text: string, query: string): React.ReactNode => {
+    const q = (query || "").trim();
+    if (!q || !text) return text;
+    // 1) 收集 query 的 ngram 候选 (2-8 字),按长度降序去重
+    const candidates = new Set<string>();
+    const cleanQ = q.replace(/[\s,。.,!?!?、:;""'']+/g, " ").trim();
+    const words = cleanQ.split(/\s+/).filter(w => w.length >= 2);
+    words.forEach(w => candidates.add(w));
+    // 中文: 也加 ngram
+    for (const w of words) {
+      if (w.length >= 3) {
+        for (let n = Math.min(w.length, 6); n >= 2; n--) {
+          for (let i = 0; i + n <= w.length; i++) {
+            candidates.add(w.slice(i, i + n));
+          }
+        }
+      }
+    }
+    const sorted = Array.from(candidates).sort((a, b) => b.length - a.length);
+    if (sorted.length === 0) return text;
+    // 2) 找 non-overlapping matches
+    const ranges: Array<[number, number]> = [];
+    const lower = text.toLowerCase();
+    for (const tok of sorted) {
+      const lt = tok.toLowerCase();
+      let from = 0;
+      while (from < lower.length) {
+        const idx = lower.indexOf(lt, from);
+        if (idx === -1) break;
+        const end = idx + lt.length;
+        // overlap check
+        const overlap = ranges.some(([s, e]) => Math.max(s, idx) < Math.min(e, end));
+        if (!overlap) ranges.push([idx, end]);
+        from = end;
+      }
+    }
+    if (ranges.length === 0) return text;
+    ranges.sort((a, b) => a[0] - b[0]);
+    // 3) 拼成 JSX
+    const out: React.ReactNode[] = [];
+    let cursor = 0;
+    ranges.forEach(([s, e], i) => {
+      if (s > cursor) out.push(text.slice(cursor, s));
+      out.push(
+        <mark key={`hl-${i}`} className="bg-[#fff4cc] text-[#7a5b00] rounded-sm px-0.5" style={{ fontWeight: 600 }}>
+          {text.slice(s, e)}
+        </mark>
+      );
+      cursor = e;
+    });
+    if (cursor < text.length) out.push(text.slice(cursor));
+    return <>{out}</>;
+  }, []);
+
+  // 截断 + 智能围绕第一个匹配 (snippet) — 让评委一眼看到匹配点
+  const buildSearchSnippet = useCallback((text: string, query: string, maxLen = 80): { snippet: string; truncated: boolean } => {
+    if (!query || !text || text.length <= maxLen) return { snippet: text, truncated: text.length > maxLen };
+    const q = (query || "").trim().toLowerCase();
+    const lower = text.toLowerCase();
+    const tokens = q.split(/\s+/).filter(w => w.length >= 2);
+    let firstMatch = -1;
+    for (const t of tokens) {
+      const idx = lower.indexOf(t);
+      if (idx >= 0 && (firstMatch === -1 || idx < firstMatch)) firstMatch = idx;
+    }
+    if (firstMatch < 0) return { snippet: text.slice(0, maxLen) + "…", truncated: true };
+    const start = Math.max(0, firstMatch - 20);
+    const end = Math.min(text.length, start + maxLen);
+    const prefix = start > 0 ? "…" : "";
+    const suffix = end < text.length ? "…" : "";
+    return { snippet: prefix + text.slice(start, end) + suffix, truncated: true };
+  }, []);
+
   const formatRelativeTime = (isoStr: string) => {
     const diff = Date.now() - new Date(isoStr).getTime();
     const mins = Math.floor(diff / 60000);
@@ -1023,7 +1284,120 @@ export default function Sidebar() {
     return groups;
   }, [filteredHistory, lang]);
 
-  // ── 真实统计数据 ──
+  // v31: 会话视图 — 同平台、30 分钟内的连续 prompt 视为一个会话
+  const sessionGroups = useMemo(() => {
+    const SESSION_GAP_MS = 30 * 60 * 1000; // 30 min gap = new session
+    const sorted = [...filteredHistory].sort((a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    type Session = {
+      id: string;
+      platform: string;
+      startTime: string;
+      endTime: string;
+      items: typeof filteredHistory;
+    };
+    const sessions: Session[] = [];
+    for (const item of sorted) {
+      const platform = item.platform || "unknown";
+      const itemTime = new Date(item.created_at).getTime();
+      // 找最近的同平台 session,看 gap 是否 < 30min
+      const last = sessions[sessions.length - 1];
+      if (
+        last &&
+        last.platform === platform &&
+        Math.abs(new Date(last.endTime).getTime() - itemTime) <= SESSION_GAP_MS
+      ) {
+        last.items.push(item);
+        last.endTime = item.created_at; // sorted desc, so this is the earliest in session
+      } else {
+        sessions.push({
+          id: `${platform}-${item.created_at}`,
+          platform,
+          startTime: item.created_at,
+          endTime: item.created_at,
+          items: [item],
+        });
+      }
+    }
+    return sessions;
+  }, [filteredHistory]);
+
+  // v32-F: 模板智能建议 — 客户端 frequency clustering
+  // 策略: 对所有 prompts 取 normalized 签名 (去标点+小写+前40字), count >= 2 即为高频候选
+  type TemplateSuggestion = {
+    signature: string;
+    sample: typeof realHistory[number];
+    count: number;
+    relatedIds: string[];
+    autoVars: string[];
+  };
+  const templateSuggestions = useMemo<TemplateSuggestion[]>(() => {
+    if (realHistory.length < 3) return [];
+    // 已有模板的签名,跳过
+    const existingSigs = new Set(
+      templates.map(t => (t.template_text || "").toLowerCase().replace(/[\s\W]+/g, "").slice(0, 40))
+    );
+    const buckets: Record<string, { sample: typeof realHistory[number]; ids: string[]; count: number }> = {};
+    for (const r of realHistory) {
+      const text = r.original_text || "";
+      const sig = text.toLowerCase().replace(/[\s\W]+/g, "").slice(0, 40);
+      if (!sig || sig.length < 8) continue;
+      if (existingSigs.has(sig)) continue;
+      if (!buckets[sig]) buckets[sig] = { sample: r, ids: [r.id], count: 1 };
+      else { buckets[sig].count += 1; buckets[sig].ids.push(r.id); }
+    }
+    // 自动抽变量启发: 数字、日期 (XXXX-XX-XX 等)、英文大写词组
+    const extractAutoVars = (text: string): string[] => {
+      const vars = new Set<string>();
+      if (/\b\d{4}-\d{2}-\d{2}\b/.test(text)) vars.add("date");
+      if (/\b\d{2,}\b/.test(text)) vars.add("number");
+      if (/[\[【「][^\]】」]+[\]】」]/.test(text)) vars.add("placeholder");
+      if (/客户|client/i.test(text)) vars.add("client_name");
+      if (/项目|project/i.test(text)) vars.add("project_name");
+      if (/产品|product/i.test(text)) vars.add("product_name");
+      return Array.from(vars).slice(0, 4);
+    };
+    const list: TemplateSuggestion[] = Object.entries(buckets)
+      .filter(([, v]) => v.count >= 2)
+      .map(([signature, v]) => ({
+        signature,
+        sample: v.sample,
+        count: v.count,
+        relatedIds: v.ids,
+        autoVars: extractAutoVars(v.sample.original_text || ""),
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+    return list;
+  }, [realHistory, templates]);
+
+  const handleSaveTemplateFromSuggestion = useCallback(async (s: TemplateSuggestion) => {
+    if (!user) return;
+    const defaultName = (s.sample.original_text || "").slice(0, 40);
+    const name = typeof window !== "undefined"
+      ? window.prompt("给这个模板起个名字 (重复出现 " + s.count + " 次)", defaultName)
+      : defaultName;
+    if (!name || !name.trim()) return;
+    try {
+      // 用 sample 的 optimized_text 作为模板,如果没有 fallback original_text
+      // 自动把检测到的"变量"占位符在 text 中包成 {{var}} (尽力而为,简单替换)
+      let templateText = s.sample.optimized_text || s.sample.original_text || "";
+      for (const v of s.autoVars) {
+        if (v === "date") templateText = templateText.replace(/\b\d{4}-\d{2}-\d{2}\b/g, `{{${v}}}`);
+        else if (v === "number") templateText = templateText.replace(/\b\d{2,}\b/g, `{{${v}}}`);
+        else if (v === "placeholder") templateText = templateText.replace(/[\[【「]([^\]】」]+)[\]】」]/g, `{{${v}}}`);
+      }
+      await supabase.rpc("save_template_direct", {
+        p_name: name.trim().slice(0, 100),
+        p_template_text: templateText,
+      });
+      await loadTemplates();
+      setHistoryView("templates");
+    } catch (err) {
+      console.error("[suggest template]", err);
+    }
+  }, [user, loadTemplates]);
   type RealStats = {
     totalPrompts: number;
     streak: number;
@@ -2587,82 +2961,106 @@ export default function Sidebar() {
                         </motion.div>
                       )}
 
-                      {/* v26: ⭐ 收藏 + 📁 加入项目 */}
+                      {/* v31 polish: 行动条 — 左侧管理 (☆ + 📁), 右侧主操作 (↗ 发送) */}
                       {user && (
-                        <div className="flex items-center gap-2 mt-2 flex-wrap">
-                          <button
-                            type="button"
-                            onClick={toggleOptimizedStar}
-                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] border transition-colors ${
-                              optimizedIsStarred
-                                ? "bg-[#fff7e0] text-[#a06a08] border-[#fbbf24]"
-                                : "bg-white text-[#8b8b9e] border-[#e0e0e6] hover:border-[#fbbf24]"
-                            }`}
-                            title="收藏供未来检索"
-                          >
-                            {optimizedIsStarred ? "⭐ 已收藏" : "☆ 收藏"}
-                          </button>
-                          <div className="relative">
+                        <div className="mt-2 flex items-center gap-2 px-1">
+                          {/* 左侧管理动作 */}
+                          <div className="flex items-center gap-1.5">
                             <button
                               type="button"
-                              onClick={() => setShowProjectMenu(v => !v)}
-                              className="inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[10.5px] bg-white text-[#3a3a45] border border-[#e0e0e6] hover:border-[#7c3aed] hover:bg-[#faf7ff] transition-colors"
-                              title="把这条 prompt 归类到一个项目"
+                              onClick={toggleOptimizedStar}
+                              className={`inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] border transition-all active:scale-[0.97] ${
+                                optimizedIsStarred
+                                  ? "bg-[#fff7e0] text-[#a06a08] border-[#fbbf24] shadow-[0_0_0_1px_rgba(251,191,36,0.15)]"
+                                  : "bg-white text-[#6f6682] border-[#e7e1ef] hover:border-[#fbbf24] hover:text-[#a06a08] hover:bg-[#fffbef]"
+                              }`}
+                              title={optimizedIsStarred ? "已收藏 — 再次点击取消" : "收藏供未来检索"}
                             >
-                              📁 加入项目 ▾
+                              <span className="text-[12px] leading-none">{optimizedIsStarred ? "⭐" : "☆"}</span>
+                              <span className="leading-none">{optimizedIsStarred ? "已收藏" : "收藏"}</span>
                             </button>
-                            {showProjectMenu && (
-                              <>
-                                <div className="fixed inset-0 z-10" onClick={() => setShowProjectMenu(false)} />
-                                <div className="absolute z-20 top-full mt-1 left-0 bg-white border border-zinc-200 rounded-md shadow-lg min-w-[200px] max-h-[260px] overflow-y-auto">
-                                  {userProjects.length === 0 ? (
-                                    <div className="p-3 text-[11.5px] text-zinc-500 leading-relaxed">
-                                      还没有项目<br />
-                                      <button
-                                        type="button"
-                                        onClick={() => { setActiveTab("projects"); setShowProjectMenu(false); }}
-                                        className="text-[#7c3aed] hover:underline mt-1"
-                                      >
-                                        去 📁 项目 tab 创建第一个 →
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <>
-                                      {userProjects.map(p => (
-                                        <button
-                                          key={p.id}
-                                          type="button"
-                                          onClick={() => assignOptimizedToProject(p.id, p.name)}
-                                          className="w-full text-left flex items-center gap-2 px-3 py-1.5 text-[12px] text-zinc-700 hover:bg-zinc-50"
-                                        >
-                                          <span
-                                            className="w-2 h-2 rounded-full flex-shrink-0"
-                                            style={{ background: p.color || "#7c3aed" }}
-                                          />
-                                          <span className="truncate">{p.name}</span>
-                                        </button>
-                                      ))}
-                                      <div className="border-t border-zinc-100 px-3 py-1.5">
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() => setShowProjectMenu(v => !v)}
+                                className={`inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] border transition-all active:scale-[0.97] ${
+                                  showProjectMenu
+                                    ? "bg-[#faf7ff] text-[#5d3eb8] border-[#c7b3f5]"
+                                    : "bg-white text-[#6f6682] border-[#e7e1ef] hover:border-[#c7b3f5] hover:text-[#5d3eb8] hover:bg-[#faf7ff]"
+                                }`}
+                                title="把这条 prompt 归类到一个项目"
+                              >
+                                <span className="leading-none">📁</span>
+                                <span className="leading-none">加入项目</span>
+                                <span className="text-[9px] leading-none opacity-60">▾</span>
+                              </button>
+                              {showProjectMenu && (
+                                <>
+                                  <div className="fixed inset-0 z-10" onClick={() => setShowProjectMenu(false)} />
+                                  <div className="absolute z-20 top-full mt-1.5 left-0 bg-white border border-[#e7e1ef] rounded-lg shadow-[0_8px_24px_rgba(24,24,27,0.08)] min-w-[220px] max-h-[260px] overflow-y-auto py-1">
+                                    {userProjects.length === 0 ? (
+                                      <div className="p-3 text-[11.5px] text-zinc-500 leading-relaxed">
+                                        还没有项目<br />
                                         <button
                                           type="button"
                                           onClick={() => { setActiveTab("projects"); setShowProjectMenu(false); }}
-                                          className="text-[11px] text-[#7c3aed] hover:underline"
+                                          className="text-[#7c3aed] hover:underline mt-1"
                                         >
-                                          + 新建项目
+                                          去 📁 项目 tab 创建第一个 →
                                         </button>
                                       </div>
-                                    </>
-                                  )}
-                                </div>
-                              </>
-                            )}
+                                    ) : (
+                                      <>
+                                        {userProjects.map(p => (
+                                          <button
+                                            key={p.id}
+                                            type="button"
+                                            onClick={() => assignOptimizedToProject(p.id, p.name)}
+                                            className="w-full text-left flex items-center gap-2 px-3 py-1.5 text-[12px] text-zinc-700 hover:bg-[#faf7ff] transition-colors"
+                                          >
+                                            <span
+                                              className="w-2 h-2 rounded-full flex-shrink-0"
+                                              style={{ background: p.color || "#7c3aed" }}
+                                            />
+                                            <span className="truncate">{p.name}</span>
+                                          </button>
+                                        ))}
+                                        <div className="border-t border-zinc-100 mt-1 px-3 py-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => { setActiveTab("projects"); setShowProjectMenu(false); }}
+                                            className="text-[11px] text-[#7c3aed] hover:underline"
+                                          >
+                                            + 新建项目
+                                          </button>
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                </>
+                              )}
+                            </div>
                           </div>
-                          {assignToast && (
-                            <span className={`text-[10.5px] ${assignToast.startsWith("✓") ? "text-green-600" : "text-amber-600"}`}>
-                              {assignToast}
-                            </span>
-                          )}
-                          {/* v27: 一键发到当前 AI tab */}
+
+                          {/* 中间分隔 + toast */}
+                          <div className="flex-1 flex items-center justify-center min-w-0">
+                            <AnimatePresence>
+                              {assignToast && (
+                                <motion.span
+                                  key={assignToast}
+                                  initial={{ opacity: 0, y: -2 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0 }}
+                                  transition={{ duration: 0.15 }}
+                                  className={`text-[10.5px] truncate ${assignToast.startsWith("✓") ? "text-emerald-600" : "text-amber-600"}`}
+                                >
+                                  {assignToast}
+                                </motion.span>
+                              )}
+                            </AnimatePresence>
+                          </div>
+
+                          {/* 右侧主操作 — 发送到当前 AI */}
                           <button
                             type="button"
                             onClick={async () => {
@@ -2674,10 +3072,12 @@ export default function Sidebar() {
                               );
                               setTimeout(() => setAssignToast(""), 2500);
                             }}
-                            className="ml-auto inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[10.5px] bg-[#18181b] text-white hover:bg-[#2a2a30] transition-colors"
+                            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md text-[11px] bg-[#18181b] text-white hover:bg-[#2a2a30] active:scale-[0.97] transition-all shadow-[0_1px_2px_rgba(24,24,27,0.18)]"
+                            style={{ fontWeight: 500 }}
                             title="把这条优化版直接发到当前打开的 AI 网页输入框"
                           >
-                            ↗ 发送到当前 AI
+                            <span className="leading-none">↗</span>
+                            <span className="leading-none">发送到 AI</span>
                           </button>
                         </div>
                       )}
@@ -2984,16 +3384,17 @@ export default function Sidebar() {
                     <p className="text-[11.5px] text-[#8b8b9e]">{t("historyAssetHint")}</p>
                   </div>
 
-                  {/* v30: View mode toggle 历史 vs 模板 */}
+                  {/* v30/v31: View mode toggle 历史 / 会话 / 模板 */}
                   <div className="flex items-center gap-1.5 mb-3">
                     {[
-                      { value: "history", label: "📜 历史", count: null as null | number },
+                      { value: "history", label: "📜 列表", count: null as null | number },
+                      { value: "sessions", label: "💬 会话", count: sessionGroups.length },
                       { value: "templates", label: "📚 模板", count: templates.length },
                     ].map((opt) => (
                       <button
                         key={opt.value}
-                        onClick={() => setHistoryView(opt.value as "history" | "templates")}
-                        className={`flex-1 px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
+                        onClick={() => setHistoryView(opt.value as "history" | "sessions" | "templates")}
+                        className={`flex-1 px-2 py-1.5 text-[12px] rounded-md border transition-colors ${
                           historyView === opt.value
                             ? "bg-[#18181b] text-white border-[#18181b]"
                             : "bg-white text-[#6f6682] border-[#e7e1ef] hover:border-[#c0c0cc]"
@@ -3012,6 +3413,55 @@ export default function Sidebar() {
                   {/* v30: Templates view */}
                   {historyView === "templates" ? (
                     <div>
+                      {/* v32-F: 智能模板建议 banner */}
+                      {!templatesLoading && templateSuggestions.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="mb-3 rounded-lg border border-[#e0d3f9] bg-gradient-to-br from-[#faf7ff] to-white p-3"
+                        >
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <span className="text-[14px]">💡</span>
+                            <span className="text-[12px] font-semibold text-[#5d3eb8]">
+                              发现 {templateSuggestions.length} 条高频 prompt 适合存为模板
+                            </span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {templateSuggestions.map((s) => (
+                              <div
+                                key={s.signature}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-white border border-[#ece7f4] hover:border-[#c7b3f5] transition-colors"
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[11.5px] text-[#3a3a45] truncate">
+                                    {s.sample.original_text.slice(0, 60)}{s.sample.original_text.length > 60 ? "…" : ""}
+                                  </p>
+                                  <div className="flex items-center gap-1.5 mt-0.5">
+                                    <span className="text-[10px] text-[#8b8b9e]">
+                                      重复 {s.count} 次
+                                    </span>
+                                    {s.autoVars.length > 0 && (
+                                      <>
+                                        <span className="text-[10px] text-[#c0c0cc]">·</span>
+                                        <span className="text-[10px] text-[#5d3eb8]">
+                                          自动识别: {s.autoVars.map(v => `{{${v}}}`).join(" ")}
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => handleSaveTemplateFromSuggestion(s)}
+                                  className="flex-shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] bg-[#5d3eb8] text-white hover:bg-[#7c3aed] active:scale-[0.97] transition-all"
+                                  style={{ fontWeight: 500 }}
+                                >
+                                  💾 存为模板
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
                       {templatesLoading ? (
                         <div className="py-8 text-center text-[12px] text-zinc-400">加载模板中...</div>
                       ) : templates.length === 0 ? (
@@ -3065,6 +3515,13 @@ export default function Sidebar() {
                                   ↗ 使用模板
                                 </Button>
                                 <button
+                                  onClick={() => handleOpenEditTemplate(tpl)}
+                                  className="text-[11px] text-zinc-500 hover:text-[#5d3eb8] px-2 py-1"
+                                  title="编辑模板"
+                                >
+                                  ✏️
+                                </button>
+                                <button
                                   onClick={() => handleDeleteTemplate(tpl.id)}
                                   className="text-[11px] text-zinc-400 hover:text-red-500 px-2 py-1"
                                   title="删除模板"
@@ -3074,6 +3531,150 @@ export default function Sidebar() {
                               </div>
                             </motion.div>
                           ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : historyView === "sessions" ? (
+                    /* v31: Sessions view — 同平台 + 30min 内的 prompts 视为一个会话 */
+                    <div>
+                      {sessionGroups.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-zinc-200 px-3 py-6 text-center">
+                          <div className="text-3xl mb-2">💬</div>
+                          <p className="text-[12.5px] text-zinc-700 mb-1 font-medium">还没有会话</p>
+                          <p className="text-[11px] text-zinc-500 leading-relaxed">
+                            优化几条 prompt 后,系统会按平台 + 时间窗口<br/>
+                            自动把"同一段对话"的 prompt 聚成一个会话卡片
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2.5">
+                          {sessionGroups.map((s) => {
+                            const sessionKey = `session:${s.id}`;
+                            const isExpanded = expandedHistory === sessionKey;
+                            const startDate = new Date(s.startTime);
+                            const endDate = new Date(s.endTime);
+                            const sameMinute = Math.abs(startDate.getTime() - endDate.getTime()) < 60000;
+                            const platformLabel = s.platform === "unknown" ? "未识别" : s.platform;
+                            const hasStarred = s.items.some(x => x.is_starred);
+                            return (
+                              <motion.div
+                                key={s.id}
+                                layout
+                                initial={{ opacity: 0, y: 4 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="rounded-xl border border-[#e8e8ec] bg-white hover:border-[#d0d0d8] transition-colors overflow-hidden"
+                              >
+                                {/* Session header */}
+                                <button
+                                  onClick={() => setExpandedHistory(isExpanded ? null : sessionKey)}
+                                  className="text-left w-full p-3.5 group"
+                                >
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-[10.5px] font-semibold text-[#5d3eb8] bg-[#faf7ff] border border-[#e0d3f9] px-2 py-0.5 rounded-full capitalize">
+                                        💬 {platformLabel}
+                                      </span>
+                                      <span className="text-[11px] text-[#8b8b9e]">
+                                        {formatRelativeTime(s.startTime)}
+                                        {!sameMinute && (
+                                          <>
+                                            {" · 持续 "}
+                                            {Math.max(1, Math.round((startDate.getTime() - endDate.getTime()) / 60000))}
+                                            {" 分钟"}
+                                          </>
+                                        )}
+                                      </span>
+                                      <span className="text-[10.5px] text-[#6f6682] bg-[#f4f4f6] px-1.5 py-0.5 rounded">
+                                        {s.items.length} 条 prompt
+                                      </span>
+                                      {hasStarred && (
+                                        <span className="text-[10.5px] text-[#a06a08] bg-[#fff7e0] border border-[#fbbf24] px-1.5 py-0.5 rounded">
+                                          ⭐ 含收藏
+                                        </span>
+                                      )}
+                                    </div>
+                                    <motion.div
+                                      animate={{ rotate: isExpanded ? 90 : 0 }}
+                                      transition={{ duration: 0.15 }}
+                                    >
+                                      <ArrowRight size={12} className="text-[#c0c0cc] group-hover:text-[#18181b] transition-colors" />
+                                    </motion.div>
+                                  </div>
+                                  {/* 第一条 prompt 作为标题摘要 */}
+                                  <p className="text-[13px] text-[#18181b]" style={{ fontWeight: 500 }}>
+                                    {s.items[s.items.length - 1].original_text.length > 60
+                                      ? s.items[s.items.length - 1].original_text.slice(0, 60) + "…"
+                                      : s.items[s.items.length - 1].original_text}
+                                  </p>
+                                  {!isExpanded && s.items.length > 1 && (
+                                    <p className="text-[12px] text-[#8b8b9e] truncate mt-1">
+                                      … 还有 {s.items.length - 1} 条 prompt
+                                    </p>
+                                  )}
+                                </button>
+                                {/* Expanded — 整个会话的 prompts 时间倒序 */}
+                                <AnimatePresence>
+                                  {isExpanded && (
+                                    <motion.div
+                                      initial={{ height: 0, opacity: 0 }}
+                                      animate={{ height: "auto", opacity: 1 }}
+                                      exit={{ height: 0, opacity: 0 }}
+                                      transition={{ duration: 0.2 }}
+                                      className="overflow-hidden"
+                                    >
+                                      <div className="px-3.5 pb-3.5 border-t border-[#f0f0f4] pt-3 space-y-2">
+                                        {s.items.map((it, idx) => (
+                                          <div
+                                            key={it.id}
+                                            className="rounded-lg bg-[#fafafa] border border-[#e8e8ec] p-2.5"
+                                          >
+                                            <div className="flex items-center gap-2 mb-1">
+                                              <span className="text-[10px] text-[#8b8b9e]">
+                                                #{s.items.length - idx} · {formatRelativeTime(it.created_at)}
+                                              </span>
+                                              {it.is_starred && (
+                                                <span className="text-[10px] text-[#a06a08]">⭐</span>
+                                              )}
+                                            </div>
+                                            <p className="text-[12px] text-[#18181b] mb-1" style={{ fontWeight: 500 }}>
+                                              {it.original_text.length > 100
+                                                ? it.original_text.slice(0, 100) + "…"
+                                                : it.original_text}
+                                            </p>
+                                            {it.optimized_text && (
+                                              <p className="text-[11.5px] text-[#6f6682] truncate">
+                                                → {it.optimized_text.split("\n")[0]}
+                                              </p>
+                                            )}
+                                            <div className="flex items-center gap-1.5 mt-1.5">
+                                              <button
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  if (it.optimized_text) handleCopy(it.optimized_text);
+                                                }}
+                                                className="text-[10px] text-[#6f6682] hover:text-[#18181b] bg-white border border-[#e7e1ef] px-2 py-0.5 rounded transition-colors"
+                                              >
+                                                📋 复制优化版
+                                              </button>
+                                              <button
+                                                onClick={async (e) => {
+                                                  e.stopPropagation();
+                                                  if (it.optimized_text) await fillTextToChat(it.optimized_text);
+                                                }}
+                                                className="text-[10px] text-white bg-[#18181b] hover:bg-[#2a2a30] px-2 py-0.5 rounded transition-colors"
+                                              >
+                                                ↗ 发到 AI
+                                              </button>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </motion.div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -3181,8 +3782,8 @@ export default function Sidebar() {
                       </motion.div>
                     </div>
                   ) : filteredHistory.length === 0 ? (
-                    /* 空状态 */
-                    <div className="flex flex-col items-center justify-center py-12">
+                    /* 空状态 — v32-B: 加示例数据按钮 */
+                    <div className="flex flex-col items-center justify-center py-10 px-4">
                       <Clock size={28} className="text-[#e8e8ec] mb-3" />
                       <p className="text-[13px] text-[#8b8b9e]">
                         {historySearch
@@ -3190,9 +3791,43 @@ export default function Sidebar() {
                           : (lang === "zh" ? "还没有优化记录" : "No history yet")}
                       </p>
                       {!historySearch && (
-                        <p className="text-[12px] text-[#c0c0cc] mt-1">
-                          {lang === "zh" ? "去优化你的第一个 prompt 吧" : "Optimize your first prompt!"}
-                        </p>
+                        <>
+                          <p className="text-[12px] text-[#c0c0cc] mt-1 mb-4">
+                            {lang === "zh" ? "去优化你的第一个 prompt 吧" : "Optimize your first prompt!"}
+                          </p>
+                          <div className="w-full max-w-[280px] rounded-xl border border-[#e0d3f9] bg-gradient-to-br from-[#faf7ff] to-white p-3.5 text-center">
+                            <div className="text-[20px] mb-1">✨</div>
+                            <p className="text-[12.5px] text-[#5d3eb8] font-medium mb-1">
+                              第一次用?先体验示例数据
+                            </p>
+                            <p className="text-[11px] text-[#8b7eb3] leading-relaxed mb-3">
+                              我们会给你账号插入 5 条 demo prompt + 1 个项目 + 1 个模板,<br/>
+                              一键看完整功能 (随时可清除)
+                            </p>
+                            <button
+                              onClick={handleSeedDemo}
+                              disabled={seedingDemo}
+                              className="w-full inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md bg-[#5d3eb8] text-white text-[12px] hover:bg-[#7c3aed] active:scale-[0.97] transition-all disabled:opacity-60 disabled:cursor-wait"
+                              style={{ fontWeight: 500 }}
+                            >
+                              {seedingDemo ? (
+                                <>
+                                  <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
+                                    <Sparkles size={12} />
+                                  </motion.span>
+                                  正在写入...
+                                </>
+                              ) : (
+                                <>🎬 加载示例数据</>
+                              )}
+                            </button>
+                            {demoSeededToast && (
+                              <p className={`mt-2 text-[10.5px] ${demoSeededToast.startsWith("✓") ? "text-emerald-600" : "text-amber-600"}`}>
+                                {demoSeededToast}
+                              </p>
+                            )}
+                          </div>
+                        </>
                       )}
                     </div>
                   ) : (
@@ -3211,7 +3846,8 @@ export default function Sidebar() {
                           <div className="flex flex-col gap-2.5">
                       {group.items.map((item, i) => {
                         const uid = `${group.label}-${i}`;
-                        const isExpanded = expandedHistory === (groupedHistory.indexOf(group) * 1000 + i);
+                        const listKey = `list:${groupedHistory.indexOf(group)}-${i}`;
+                        const isExpanded = expandedHistory === listKey;
                         return (
                           <motion.div
                             key={item.id}
@@ -3220,7 +3856,7 @@ export default function Sidebar() {
                           >
                             {/* Header */}
                             <button
-                              onClick={() => setExpandedHistory(isExpanded ? null : (groupedHistory.indexOf(group) * 1000 + i))}
+                              onClick={() => setExpandedHistory(isExpanded ? null : listKey)}
                               className="text-left w-full p-3.5 group"
                             >
                               <div className="flex items-center justify-between mb-1.5">
@@ -3245,14 +3881,28 @@ export default function Sidebar() {
                                 </motion.div>
                               </div>
                               <p className="text-[13px] text-[#18181b]" style={{ fontWeight: 500 }}>
-                                {item.original_text.length > 60
-                                  ? item.original_text.slice(0, 60) + "…"
-                                  : item.original_text}
+                                {(() => {
+                                  const { snippet } = buildSearchSnippet(item.original_text, historySearch, 60);
+                                  return historySearch ? highlightQueryInText(snippet, historySearch) : snippet;
+                                })()}
                               </p>
                               {!isExpanded && item.optimized_text && (
                                 <p className="text-[12px] text-[#8b8b9e] truncate mt-1">
-                                  → {item.optimized_text.split("\n")[0]}
+                                  → {historySearch
+                                    ? highlightQueryInText(item.optimized_text.split("\n")[0].slice(0, 80), historySearch)
+                                    : item.optimized_text.split("\n")[0]}
                                 </p>
+                              )}
+                              {/* v32-D: 搜索时展示相似度 + 匹配解释 */}
+                              {historySearch && typeof item.similarity === "number" && (
+                                <div className="flex items-center gap-1.5 mt-1.5">
+                                  <span className="text-[10px] text-[#5d3eb8] bg-[#faf7ff] border border-[#e0d3f9] px-1.5 py-0.5 rounded">
+                                    🔍 {Math.round((item.similarity || 0) * 100)}% 匹配
+                                  </span>
+                                  <span className="text-[10px] text-[#8b8b9e]">
+                                    黄色高亮 = 命中关键短语
+                                  </span>
+                                </div>
                               )}
                             </button>
 
@@ -3347,6 +3997,38 @@ export default function Sidebar() {
                                               {item.optimized_text}
                                             </div>
                                           </div>
+                                        </div>
+                                      )}
+
+                                      {/* v32-G: AI 响应 (silent_capture, ChatGPT/Claude) */}
+                                      {item.ai_response_text && (
+                                        <div className="mt-3">
+                                          <div className="flex items-center justify-between mb-1.5">
+                                            <span className="text-[11px] text-[#5d3eb8] uppercase tracking-[0.3px] flex items-center gap-1" style={{ fontWeight: 500 }}>
+                                              🤖 AI 响应
+                                              {item.platform && (
+                                                <span className="text-[10px] text-[#8b7eb3] normal-case tracking-normal">· {item.platform}</span>
+                                              )}
+                                            </span>
+                                            <button
+                                              onClick={(e) => { e.stopPropagation(); handleCopy(item.ai_response_text || ""); }}
+                                              className="flex items-center gap-1 text-[10.5px] text-[#8b8b9e] hover:text-[#18181b] bg-[#f4f4f6] hover:bg-[#ebebf0] px-2 py-0.5 rounded transition-colors"
+                                            >
+                                              <Copy size={10} />
+                                              复制响应
+                                            </button>
+                                          </div>
+                                          <div className="relative">
+                                            <div className="absolute top-0 left-0 w-[2.5px] h-full bg-[#7c3aed] rounded-full" />
+                                            <div className="pl-3 text-[12.5px] text-[#3a3a45] whitespace-pre-wrap max-h-[180px] overflow-y-auto bg-[#faf7ff] rounded-r p-2" style={{ lineHeight: "1.7" }}>
+                                              {item.ai_response_text}
+                                            </div>
+                                          </div>
+                                          {item.ai_response_captured_at && (
+                                            <p className="text-[10px] text-[#a78bfa] mt-1">
+                                              捕获于 {formatRelativeTime(item.ai_response_captured_at)}
+                                            </p>
+                                          )}
                                         </div>
                                       )}
 
@@ -4050,6 +4732,258 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
+
+      {/* v33-γ: ⌘K 全局命令面板 */}
+      {cmdkOpen && (
+        <div
+          className="fixed inset-0 z-[70] flex items-start justify-center pt-[10vh] px-4"
+          style={{ background: "oklch(0% 0 0 / 0.55)", backdropFilter: "blur(6px)" }}
+          onClick={() => setCmdkOpen(false)}
+        >
+          <div
+            className="relative w-full max-w-[520px] bg-white rounded-2xl shadow-[0_16px_60px_rgba(0,0,0,0.25)] overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* 输入栏 */}
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-100">
+              <span className="text-zinc-400 text-[14px]">⌘K</span>
+              <input
+                type="text"
+                value={cmdkQuery}
+                onChange={(e) => setCmdkQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setCmdkActiveIndex(i => Math.min(i + 1, cmdkResults.length - 1));
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setCmdkActiveIndex(i => Math.max(i - 1, 0));
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    const item = cmdkResults[cmdkActiveIndex];
+                    if (!item) return;
+                    if (item.kind === "action") item.onPick();
+                    else if (item.kind === "template") {
+                      handleUseTemplate(item.raw);
+                      setCmdkOpen(false);
+                    } else if (item.kind === "project") {
+                      setActiveTab("projects");
+                      setCmdkOpen(false);
+                    } else if (item.kind === "prompt") {
+                      const r = realHistory.find(x => x.id === item.id);
+                      if (r) {
+                        setInputText(r.original_text);
+                        setActiveTab("optimize");
+                      }
+                      setCmdkOpen(false);
+                    }
+                  }
+                }}
+                autoFocus
+                placeholder="搜索模板 / 项目 / 历史 prompt 或选择操作..."
+                className="flex-1 bg-transparent border-none focus:outline-none text-[14px] text-zinc-900 placeholder:text-zinc-400"
+              />
+              <kbd className="text-[10px] text-zinc-400 bg-zinc-100 px-1.5 py-0.5 rounded border border-zinc-200">esc</kbd>
+            </div>
+            {/* 结果列表 */}
+            <div className="max-h-[60vh] overflow-y-auto">
+              {cmdkResults.length === 0 ? (
+                <div className="py-10 text-center text-[12.5px] text-zinc-400">
+                  没有匹配的项目 / 模板 / 历史 prompt
+                </div>
+              ) : (
+                <div className="py-1">
+                  {cmdkResults.map((item, idx) => {
+                    const isActive = idx === cmdkActiveIndex;
+                    const baseCls = `flex items-center gap-2.5 px-4 py-2 cursor-pointer transition-colors ${
+                      isActive ? "bg-[#faf7ff]" : "hover:bg-zinc-50"
+                    }`;
+                    if (item.kind === "action") {
+                      return (
+                        <div
+                          key={`a-${idx}`}
+                          className={baseCls}
+                          onMouseEnter={() => setCmdkActiveIndex(idx)}
+                          onClick={() => item.onPick()}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12.5px] text-zinc-900 font-medium">{item.label}</div>
+                            <div className="text-[10.5px] text-zinc-400">{item.sub}</div>
+                          </div>
+                          <span className="text-[10px] text-zinc-300">操作</span>
+                        </div>
+                      );
+                    }
+                    if (item.kind === "template") {
+                      return (
+                        <div
+                          key={`t-${item.id}`}
+                          className={baseCls}
+                          onMouseEnter={() => setCmdkActiveIndex(idx)}
+                          onClick={() => { handleUseTemplate(item.raw); setCmdkOpen(false); }}
+                        >
+                          <span className="text-[14px]">📚</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12.5px] text-zinc-900 truncate">{item.name}</div>
+                            <div className="text-[10.5px] text-zinc-400">
+                              {item.vars > 0 ? `${item.vars} 变量 · ` : ""}用了 {item.useCount} 次
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-[#5d3eb8]">模板</span>
+                        </div>
+                      );
+                    }
+                    if (item.kind === "project") {
+                      return (
+                        <div
+                          key={`p-${item.id}`}
+                          className={baseCls}
+                          onMouseEnter={() => setCmdkActiveIndex(idx)}
+                          onClick={() => { setActiveTab("projects"); setCmdkOpen(false); }}
+                        >
+                          <span
+                            className="w-3 h-3 rounded-full flex-shrink-0"
+                            style={{ background: item.color || "#7c3aed" }}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12.5px] text-zinc-900 truncate">{item.name}</div>
+                          </div>
+                          <span className="text-[10px] text-[#5d3eb8]">项目</span>
+                        </div>
+                      );
+                    }
+                    if (item.kind === "prompt") {
+                      return (
+                        <div
+                          key={`pr-${item.id}`}
+                          className={baseCls}
+                          onMouseEnter={() => setCmdkActiveIndex(idx)}
+                          onClick={() => {
+                            const r = realHistory.find(x => x.id === item.id);
+                            if (r) { setInputText(r.original_text); setActiveTab("optimize"); }
+                            setCmdkOpen(false);
+                          }}
+                        >
+                          <span className="text-[14px]">📜</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12.5px] text-zinc-900 truncate">{item.preview}</div>
+                            {item.platform && (
+                              <div className="text-[10.5px] text-zinc-400 capitalize">{item.platform}</div>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-zinc-400">历史</span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })}
+                </div>
+              )}
+            </div>
+            {/* 底部 hint */}
+            <div className="px-4 py-2 border-t border-zinc-100 flex items-center gap-3 text-[10px] text-zinc-400 bg-zinc-50/50">
+              <span><kbd className="bg-white border border-zinc-200 px-1 rounded">↑↓</kbd> 选择</span>
+              <span><kbd className="bg-white border border-zinc-200 px-1 rounded">↵</kbd> 打开</span>
+              <span className="ml-auto">{cmdkResults.length} 个结果</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* v33-β: 模板编辑 Modal */}
+      {editingTemplate && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center px-4"
+          style={{ background: "oklch(0% 0 0 / 0.5)", backdropFilter: "blur(4px)" }}
+          onClick={handleCloseEditTemplate}
+        >
+          <div
+            className="relative w-full max-w-[460px] bg-white rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.18)] flex flex-col max-h-[88vh]"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="px-5 pt-5 pb-3 border-b border-zinc-100 flex items-center gap-2">
+              <span className="text-[16px]">✏️</span>
+              <h3 className="text-[15px] font-semibold text-zinc-900">编辑模板</h3>
+              <button
+                onClick={handleCloseEditTemplate}
+                className="ml-auto text-zinc-400 hover:text-zinc-700 text-[18px] leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="px-5 py-4 overflow-y-auto space-y-3">
+              <div>
+                <label className="text-[11px] font-medium text-zinc-700 block mb-1">模板名称</label>
+                <input
+                  type="text"
+                  value={editTplName}
+                  onChange={(e) => setEditTplName(e.target.value)}
+                  maxLength={100}
+                  placeholder="例: 客户延期通知邮件"
+                  className="w-full px-3 py-2 rounded-md border border-zinc-200 focus:outline-none focus:border-[#5d3eb8] text-[13px]"
+                />
+                <p className="text-[10.5px] text-zinc-400 mt-1">{editTplName.length}/100</p>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-zinc-700 block mb-1">
+                  模板内容 <span className="text-zinc-400">(支持 {"{{变量}}"} 占位符,保存后自动重抽)</span>
+                </label>
+                <textarea
+                  value={editTplText}
+                  onChange={(e) => setEditTplText(e.target.value)}
+                  maxLength={8000}
+                  rows={9}
+                  placeholder="模板正文,用 {{var}} 标占位符"
+                  className="w-full px-3 py-2 rounded-md border border-zinc-200 focus:outline-none focus:border-[#5d3eb8] text-[12.5px] font-mono leading-relaxed resize-y"
+                />
+                <p className="text-[10.5px] text-zinc-400 mt-1">{editTplText.length}/8000</p>
+              </div>
+              {/* 实时识别变量 preview */}
+              {(() => {
+                const detectedVars = Array.from(
+                  new Set(
+                    Array.from(editTplText.matchAll(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g)).map(m => m[1])
+                  )
+                );
+                return detectedVars.length > 0 ? (
+                  <div className="rounded-md bg-[#faf7ff] border border-[#e0d3f9] px-3 py-2">
+                    <p className="text-[10.5px] text-[#5d3eb8] font-medium mb-1">检测到 {detectedVars.length} 个变量:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {detectedVars.map(v => (
+                        <span key={v} className="text-[10.5px] bg-white text-[#5d3eb8] px-1.5 py-0.5 rounded border border-[#e0d3f9]">
+                          {`{{${v}}}`}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null;
+              })()}
+              {editTplToast && (
+                <p className={`text-[11px] ${editTplToast.startsWith("✓") ? "text-emerald-600" : "text-red-600"}`}>
+                  {editTplToast}
+                </p>
+              )}
+            </div>
+            <div className="px-5 py-3 border-t border-zinc-100 flex items-center gap-2 bg-zinc-50/50">
+              <button
+                onClick={handleCloseEditTemplate}
+                disabled={editTplSaving}
+                className="flex-1 h-9 rounded-md border border-zinc-200 text-[12px] text-zinc-700 hover:bg-zinc-100 transition-colors disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveEditTemplate}
+                disabled={editTplSaving}
+                className="flex-1 h-9 rounded-md bg-[#5d3eb8] text-white text-[12px] hover:bg-[#7c3aed] active:scale-[0.97] transition-all disabled:opacity-60 disabled:cursor-wait"
+                style={{ fontWeight: 500 }}
+              >
+                {editTplSaving ? "保存中..." : "💾 保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Auth Modal ── */}
       {showAuthModal && (
