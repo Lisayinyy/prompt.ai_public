@@ -710,5 +710,3 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
     </div>
   );
 }
-
-void lang; // 暂未用到 i18n,保留参数为后续扩展
