@@ -503,7 +503,7 @@ async function generateInsightsFromRequest(env, request) {
   return await generateInsightsForUser(env, userId, email, jwt);
 }
 
-async function generateInsightsForUser(env, userId, email, authToken) {
+async function generateInsightsForUser(env, userId, email, authToken, unsubToken = null) {
   const SUPABASE_URL = env.SUPABASE_URL;
   const ANON_KEY = env.SUPABASE_ANON_KEY;
   const sevenDaysAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
@@ -676,6 +676,7 @@ async function generateInsightsForUser(env, userId, email, authToken) {
       <p style="color:#a1a1aa;font-size:0.9rem;margin:0 0 16px;">你的 AI 越用越懂你 — 跨 22 平台的记忆中枢</p>
       <a href="https://prompt-ai.work" style="display:inline-block;background:#7c3aed;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:0.95rem;font-weight:600;">打开 prompt.ai dashboard →</a>
       <p style="color:#52525b;font-size:0.72rem;margin:18px 0 0;">prompt<span style="color:#a78bfa;">.</span>ai · <a href="mailto:lisayyyin@qq.com" style="color:#8b8b9e;text-decoration:none;">lisayyyin@qq.com</a></p>
+      ${unsubToken ? `<p style="color:#52525b;font-size:0.7rem;margin:14px 0 0;">不想再收到? <a href="https://prompt-optimizer-api.prompt-optimizer.workers.dev/unsubscribe?token=${encodeURIComponent(unsubToken)}" style="color:#8b8b9e;text-decoration:underline;">一键退订</a></p>` : ""}
     </div>
   </div>
 </body></html>`;
@@ -708,6 +709,23 @@ function escapeHtml(s) {
     '"': "&quot;",
     "'": "&#39;",
   }[c]));
+}
+
+// v32-H: /unsubscribe 页面 (HTML 直出)
+function unsubHtml(success, message) {
+  const color = success ? "#7c3aed" : "#dc2626";
+  const emoji = success ? "👋" : "⚠️";
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>prompt.ai · 退订</title></head>
+<body style="margin:0;padding:0;background:#f4f4f6;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Helvetica Neue',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;">
+  <div style="max-width:440px;width:90%;margin:40px auto;background:#fff;border-radius:16px;padding:40px 32px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
+    <div style="font-size:48px;margin-bottom:16px;">${emoji}</div>
+    <h1 style="font-size:20px;color:#18181b;margin:0 0 12px;font-weight:700;">${success ? "退订成功" : "退订未完成"}</h1>
+    <p style="font-size:14px;color:#6f6f7e;line-height:1.6;margin:0 0 24px;">${escapeHtml(message)}</p>
+    <a href="https://prompt-ai.work" style="display:inline-block;background:${color};color:#fff;text-decoration:none;padding:10px 24px;border-radius:8px;font-size:13px;font-weight:600;">回到 prompt.ai</a>
+    <p style="font-size:11px;color:#a1a1aa;margin-top:24px;">还想再订阅? 登录后到 🧠 我的 AI 记忆 → 设置里打开</p>
+  </div>
+</body></html>`;
 }
 
 export default {
@@ -1560,6 +1578,178 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
+    // ─── /unsubscribe (v32-H): 通过 token 一键关闭周报订阅 ─────
+    if (url.pathname === "/unsubscribe") {
+      const token = url.searchParams.get("token");
+      if (!token || token.length < 8) {
+        return new Response(unsubHtml(false, "缺少或非法的退订 token"), {
+          status: 400, headers: { ...CORS_HEADERS, "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+      if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+        return new Response(unsubHtml(false, "服务暂时不可用,请稍后再试"), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+      try {
+        const patchRes = await fetch(
+          `${env.SUPABASE_URL}/rest/v1/profiles?weekly_insights_unsub_token=eq.${encodeURIComponent(token)}`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              "apikey": env.SUPABASE_SERVICE_ROLE_KEY,
+              "Authorization": `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+              "Prefer": "return=representation",
+            },
+            body: JSON.stringify({ weekly_insights_enabled: false }),
+          }
+        );
+        const updated = patchRes.ok ? await patchRes.json() : [];
+        if (!Array.isArray(updated) || updated.length === 0) {
+          return new Response(unsubHtml(false, "未找到对应订阅 (可能已退订)"), {
+            status: 404, headers: { ...CORS_HEADERS, "Content-Type": "text/html; charset=utf-8" },
+          });
+        }
+        return new Response(unsubHtml(true, "✓ 已退订 — 你不会再收到 prompt.ai 的周报邮件"), {
+          status: 200, headers: { ...CORS_HEADERS, "Content-Type": "text/html; charset=utf-8" },
+        });
+      } catch (err) {
+        return new Response(unsubHtml(false, "退订失败,请稍后再试"), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+    }
+
+    // ─── /cron-test (v32-H, dev only): 手动触发 scheduled() 流程便于本地验证 ─
+    if (url.pathname === "/cron-test") {
+      const adminKey = url.searchParams.get("key");
+      if (!adminKey || adminKey !== env.CRON_TEST_KEY) {
+        return new Response("Forbidden", { status: 403, headers: CORS_HEADERS });
+      }
+      try {
+        await this.scheduled({ scheduledTime: Date.now() }, env, { waitUntil: () => {} });
+        return new Response(JSON.stringify({ ok: true, msg: "cron triggered, check worker logs" }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // ─── /test-email (v33+): 不依赖 JWT/Supabase,直接用 mock 数据走 Resend
+    // 用法: GET /test-email?to=xxx@example.com&key=<TEST_EMAIL_KEY>
+    // 返回: { ok, status, resend_id?, error?, from, to, subject } — 用来 5 秒验证 Resend 配置 + 域名
+    if (url.pathname === "/test-email") {
+      const adminKey = url.searchParams.get("key");
+      if (!adminKey || adminKey !== env.TEST_EMAIL_KEY) {
+        return new Response(JSON.stringify({ error: "Forbidden — set ?key=<TEST_EMAIL_KEY>" }), {
+          status: 403, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      const to = (url.searchParams.get("to") || "").trim();
+      if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+        return new Response(JSON.stringify({ error: "Invalid or missing ?to=<email>" }), {
+          status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      if (!env.RESEND_API_KEY) {
+        return new Response(JSON.stringify({ error: "RESEND_API_KEY not configured on worker" }), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+      const dateStr = new Date().toISOString().slice(0, 16).replace("T", " ");
+      const subject = `🧪 prompt.ai · 测试邮件 ${dateStr} UTC`;
+      // 用真实模板的精简版 (跟 weekly insights 同骨架,这样能验证视觉一致性)
+      const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:#f4f4f6;margin:0;padding:32px 16px;">
+  <div style="max-width:520px;margin:0 auto;">
+    <div style="background:#18181b;border-radius:16px 16px 0 0;padding:28px 32px;">
+      <div style="font-family:Georgia,serif;font-size:1.3rem;color:#fff;margin-bottom:6px;">prompt<span style="color:#a78bfa;">.</span>ai</div>
+      <h1 style="font-size:1.5rem;color:#fff;margin:8px 0 0;font-weight:700;">🧪 测试邮件</h1>
+      <p style="color:#a1a1aa;font-size:0.85rem;margin:8px 0 0;">${dateStr} UTC</p>
+    </div>
+    <div style="background:#fff;padding:28px 32px;border-left:1px solid #e4e4e7;border-right:1px solid #e4e4e7;">
+      <div style="background:#faf7ff;border:1px solid #e0d3f9;border-radius:10px;padding:18px;margin-bottom:20px;">
+        <p style="margin:0;font-size:14px;color:#3a3a45;line-height:1.7;">
+          ✅ 如果你看到这封邮件,说明:<br/>
+          <strong>1.</strong> Cloudflare Worker 部署成功<br/>
+          <strong>2.</strong> RESEND_API_KEY 配置正确<br/>
+          <strong>3.</strong> 发件域名 <code>prompt-ai.work</code> 在 Resend 已 verified<br/>
+          <strong>4.</strong> 收件邮箱 <code>${escapeHtml(to)}</code> 投递正常
+        </p>
+      </div>
+      <p style="font-size:13px;color:#71717a;margin:0;line-height:1.7;">
+        这是 <code>/test-email</code> endpoint 触发的非真实数据测试 — 不会影响你的 weekly_insights 订阅状态。<br/>
+        要测真实周报: 触发 <code>POST /send-insights-email</code> 或等周一 cron 自动跑。
+      </p>
+    </div>
+    <div style="background:#18181b;border-radius:0 0 16px 16px;padding:20px 32px;text-align:center;">
+      <p style="color:#52525b;font-size:0.72rem;margin:0;">prompt<span style="color:#a78bfa;">.</span>ai · test endpoint</p>
+    </div>
+  </div>
+</body></html>`;
+
+      try {
+        const resendRes = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${env.RESEND_API_KEY}`,
+          },
+          body: JSON.stringify({
+            from: "prompt.ai <hi@prompt-ai.work>",
+            to: [to],
+            subject,
+            html,
+          }),
+        });
+        const resendBody = await resendRes.text();
+        let resendJson = null;
+        try { resendJson = JSON.parse(resendBody); } catch {}
+        if (resendRes.ok) {
+          return new Response(JSON.stringify({
+            ok: true,
+            from: "hi@prompt-ai.work",
+            to,
+            subject,
+            resend_status: resendRes.status,
+            resend_id: resendJson?.id || null,
+            hint: "查收件箱 (注意 spam 文件夹). 没收到时去 Resend Dashboard → Logs 看投递状态.",
+          }, null, 2), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } else {
+          // Resend 报错 — 把原文返回方便诊断 (常见: 422 域名未 verified / 401 key 失效)
+          return new Response(JSON.stringify({
+            ok: false,
+            from: "hi@prompt-ai.work",
+            to,
+            subject,
+            resend_status: resendRes.status,
+            resend_error: resendJson || resendBody,
+            hint: resendRes.status === 422
+              ? "Resend 422 一般 = 发件域名 prompt-ai.work 未 verified, 或收件人不在测试模式白名单. 去 Resend → Domains 检查."
+              : resendRes.status === 401
+              ? "Resend 401 = RESEND_API_KEY 失效, 重新生成并 wrangler secret put RESEND_API_KEY."
+              : "看 resend_error 字段细节.",
+          }, null, 2), {
+            status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      } catch (err) {
+        return new Response(JSON.stringify({
+          ok: false, error: err?.message || String(err),
+          hint: "Worker 内部异常 — 看 wrangler tail 的实时日志.",
+        }, null, 2), {
+          status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // ─── /send-insights-email (v20): 立即发送本周洞察邮件到用户邮箱 ──
     if (url.pathname === "/send-insights-email") {
       if (request.method !== "POST") {
@@ -1872,7 +2062,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
         try {
           // 2. 用 service_role 当 authToken 拿数据 (注意:这绕过 RLS,所以是 admin 视角)
           // 但 generateInsightsForUser 是按 user_id 严格过滤,不会泄漏其他用户数据
-          const insights = await generateInsightsForUser(env, r.user_id, r.email, env.SUPABASE_SERVICE_ROLE_KEY);
+          const insights = await generateInsightsForUser(env, r.user_id, r.email, env.SUPABASE_SERVICE_ROLE_KEY, r.unsub_token);
           if (insights.error) {
             console.warn(`[cron] skip ${r.user_id}: ${insights.error}`);
             failed++;

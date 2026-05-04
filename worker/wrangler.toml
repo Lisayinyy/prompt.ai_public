@@ -11,6 +11,8 @@ compatibility_date = "2024-01-01"
 # npx wrangler secret put MINIMAX_API_KEY
 # npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY  (v20 cron 必需)
 # npx wrangler secret put RESEND_API_KEY             (v20 邮件必需)
+# npx wrangler secret put CRON_TEST_KEY              (v32-H 手动触发 cron 测试用,可选)
+# npx wrangler secret put TEST_EMAIL_KEY             (v33+ /test-email 端点访问令牌,可选)
 
 # v9: Cloudflare Workers AI binding (用于 /embed endpoint 调 bge-m3)
 # 免费额度 10k neurons/day，bge-m3 单次 embedding 约 1 neuron
