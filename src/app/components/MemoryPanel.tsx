@@ -513,35 +513,54 @@ export function MemoryPanel({ open, onClose, user, onForceExtract, lang = "zh" }
         <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle className="text-red-600">⚠️ 永久删除账号</AlertDialogTitle>
+              <AlertDialogTitle className="text-red-600">{lang === "zh" ? "⚠️ 永久删除账号" : "⚠️ Delete Account Permanently"}</AlertDialogTitle>
               <AlertDialogDescription className="space-y-2">
-                <span className="block">此操作将<b>永久</b>删除你的:</span>
-                <span className="block ml-2 text-zinc-700 text-sm">
-                  • 所有 prompts 历史<br/>
-                  • 所有提取的偏好 facts<br/>
-                  • voice profile<br/>
-                  • profile 个人资料<br/>
-                  • 登录账号本身
-                </span>
-                <span className="block text-red-600 font-semibold">此操作不可撤销,数据无法恢复。</span>
-                <span className="block">如果只是想暂时离开,直接登出即可。要确认永久删除,请在下方输入 <code className="bg-zinc-100 px-1.5 py-0.5 rounded text-red-600">DELETE</code>:</span>
+                {lang === "zh" ? (
+                  <>
+                    <span className="block">此操作将<b>永久</b>删除你的:</span>
+                    <span className="block ml-2 text-zinc-700 text-sm">
+                      • 所有 prompts 历史<br/>
+                      • 所有提取的偏好 facts<br/>
+                      • voice profile<br/>
+                      • profile 个人资料<br/>
+                      • 登录账号本身
+                    </span>
+                    <span className="block text-red-600 font-semibold">此操作不可撤销,数据无法恢复。</span>
+                    <span className="block">如果只是想暂时离开,直接登出即可。要确认永久删除,请在下方输入 <code className="bg-zinc-100 px-1.5 py-0.5 rounded text-red-600">DELETE</code>:</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="block">This will <b>permanently</b> delete:</span>
+                    <span className="block ml-2 text-zinc-700 text-sm">
+                      • All prompt history<br/>
+                      • All extracted preference facts<br/>
+                      • Your voice profile<br/>
+                      • Your profile metadata<br/>
+                      • Your login account itself
+                    </span>
+                    <span className="block text-red-600 font-semibold">This cannot be undone. Data is unrecoverable.</span>
+                    <span className="block">If you just want to step away, just sign out. To confirm permanent deletion, type <code className="bg-zinc-100 px-1.5 py-0.5 rounded text-red-600">DELETE</code> below:</span>
+                  </>
+                )}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <Input
               value={deleteConfirmText}
               onChange={(e) => setDeleteConfirmText(e.target.value)}
-              placeholder="输入 DELETE 确认"
+              placeholder={lang === "zh" ? "输入 DELETE 确认" : "Type DELETE to confirm"}
               className="font-mono"
               autoFocus
             />
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+              <AlertDialogCancel disabled={deleting}>{lang === "zh" ? "取消" : "Cancel"}</AlertDialogCancel>
               <AlertDialogAction
                 onClick={(e) => { e.preventDefault(); handleDeleteAccount(); }}
                 disabled={deleteConfirmText !== "DELETE" || deleting}
                 className="bg-red-600 hover:bg-red-700 disabled:bg-red-300"
               >
-                {deleting ? "删除中..." : "永久删除"}
+                {deleting
+                  ? (lang === "zh" ? "删除中..." : "Deleting...")
+                  : (lang === "zh" ? "永久删除" : "Delete permanently")}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
