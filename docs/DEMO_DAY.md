@@ -101,7 +101,10 @@
 >
 > 商业模式:免费 100 条 → Pro ¥29 无限 → Team ¥199 共享。
 >
-> 我们不卖工具,**我们卖你的 AI 工作流第二大脑** — 一个 OpenAI、Anthropic 都拿不走的位置。"
+> 我们不卖工具,**我们卖你的 AI 工作流第二大脑** — 一个 OpenAI、Anthropic 都拿不走的位置。
+>
+> 而且这只是浏览器层 — **下一步通过 MCP 协议接入 Claude Code、Cursor、Copilot CLI**,
+> 同一份 voice profile 跨 web、跨 CLI、跨 IDE 都生效。这是 MCP 时代的结构性稀缺位置。"
 
 ---
 
@@ -143,13 +146,22 @@
    → 共享 voice profile + 项目 + 模板;企业 SOP 一次配置全员生效。
 
 8. **6 个月路线图?**
-   → Q1 Web dashboard / Q2 API 开放 / Q3 AI Insights 邮件 / Q4 Enterprise。
+   → **Q1 上 MCP server**, prompt.ai 第二大脑通过协议层接入 Claude Code / Cursor / Copilot CLI — 同一份 voice profile + templates + memory, 跨 web / CLI / IDE 都生效 / Q2 Web dashboard / Q3 Team 共享 / Q4 Enterprise。
 
 9. **自动归档准确率?**
    → LLM 60% 阈值 + banner 提示用户点 ✓,**绝不主动归档**。0 抱怨归错。
 
 10. **跟 Notion AI / Mem 有什么不同?**
     → 它们是 standalone app,我们是**寄生在所有 AI 平台上游**的中立中间件。
+
+11. **能在 Claude Code / Cursor / Copilot CLI 里用吗?(高频提问)**
+    → **Q1 通过 MCP server 接入**。架构上 prompt.ai 不是 Chrome 扩展产品,
+    是 **跨工具的 AI 第二大脑** —— UI 只是表层,核心 backend 通过 MCP 协议
+    暴露给任何支持 MCP 的工具:Claude Code 用 hook 自动优化每条 prompt,
+    Cursor 用 slash command 调模板, Copilot CLI 直接拿你的 voice profile。
+    **同一个"你",跨 22 个网页 + 所有 CLI/IDE 工具,都生效**。
+    OpenAI 做不到(他们 memory 出不了 ChatGPT),Anthropic 做不到(memory 出不了 Claude),
+    **只有中立的 prompt.ai 能做** — 这是 MCP 时代的结构性稀缺位置。
 
 ---
 
