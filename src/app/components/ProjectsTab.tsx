@@ -525,7 +525,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
             <DialogHeader>
               <DialogTitle>删除项目</DialogTitle>
               <DialogDescription>
-                确认删除项目「{selectedProject.name}」？
+                确认删除项目「{(projects.find(p => p.id === deleteId)?.name) || selectedProject?.name || "该项目"}」?
                 <span className="block mt-2 text-zinc-600 text-xs">
                   ✓ 项目内的 prompts 不会被删除,只会从此项目移出 (变成"未归类")<br />
                   ✗ 项目本身永久删除
@@ -591,13 +591,26 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
       ) : (
         <div className="space-y-2">
           {projects.map(p => (
-            <motion.button
+            <motion.div
               key={p.id}
               initial={{ opacity: 0, x: -4 }}
               animate={{ opacity: 1, x: 0 }}
+              role="button"
+              tabIndex={0}
               onClick={() => handleOpenDetail(p)}
-              className="w-full text-left rounded-lg border border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-sm transition-all overflow-hidden group"
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpenDetail(p); } }}
+              className="relative w-full text-left rounded-lg border border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-sm transition-all overflow-hidden group cursor-pointer"
             >
+              {/* v34: 列表页 hover 删除按钮 (右上角) */}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setDeleteId(p.id); }}
+                className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 text-[12px] text-zinc-400 hover:text-red-500 bg-white/80 hover:bg-red-50 px-1.5 py-0.5 rounded transition-all"
+                title="删除项目"
+                aria-label={`删除项目 ${p.name}`}
+              >
+                🗑️
+              </button>
               <div className="flex items-stretch">
                 <div
                   className="w-1.5 flex-shrink-0"
