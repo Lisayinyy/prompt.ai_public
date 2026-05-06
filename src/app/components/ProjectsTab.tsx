@@ -367,10 +367,12 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
               <h2 className="text-base font-semibold">📁 {selectedProject.name}</h2>
               <button
                 onClick={() => setDeleteId(selectedProject.id)}
-                className="text-[11px] opacity-70 hover:opacity-100 hover:text-red-200"
+                className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-white/40 bg-white/15 text-white hover:bg-red-500 hover:border-red-500 hover:text-white transition-all active:scale-[0.96]"
+                style={{ fontWeight: 500 }}
                 title="删除项目 (prompts 不会被删,只是从项目移出)"
               >
-                🗑️
+                <span>🗑️</span>
+                <span>删除项目</span>
               </button>
             </div>
             {selectedProject.description && (
@@ -591,26 +593,13 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
       ) : (
         <div className="space-y-2">
           {projects.map(p => (
-            <motion.div
+            <motion.button
               key={p.id}
               initial={{ opacity: 0, x: -4 }}
               animate={{ opacity: 1, x: 0 }}
-              role="button"
-              tabIndex={0}
               onClick={() => handleOpenDetail(p)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpenDetail(p); } }}
-              className="relative w-full text-left rounded-lg border border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-sm transition-all overflow-hidden group cursor-pointer"
+              className="w-full text-left rounded-lg border border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-sm transition-all overflow-hidden group"
             >
-              {/* v34: 列表页 hover 删除按钮 (右上角) */}
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setDeleteId(p.id); }}
-                className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 text-[12px] text-zinc-400 hover:text-red-500 bg-white/80 hover:bg-red-50 px-1.5 py-0.5 rounded transition-all"
-                title="删除项目"
-                aria-label={`删除项目 ${p.name}`}
-              >
-                🗑️
-              </button>
               <div className="flex items-stretch">
                 <div
                   className="w-1.5 flex-shrink-0"
@@ -657,7 +646,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                   </div>
                 </div>
               </div>
-            </motion.div>
+            </motion.button>
           ))}
         </div>
       )}
