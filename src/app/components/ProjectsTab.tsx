@@ -367,12 +367,11 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
               <h2 className="text-base font-semibold">📁 {selectedProject.name}</h2>
               <button
                 onClick={() => setDeleteId(selectedProject.id)}
-                className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-white/40 bg-white/15 text-white hover:bg-red-500 hover:border-red-500 hover:text-white transition-all active:scale-[0.96]"
+                className="inline-flex items-center text-[11px] px-2.5 py-1 rounded-md border border-white/40 bg-white/15 text-white hover:bg-red-500 hover:border-red-500 hover:text-white transition-all active:scale-[0.96]"
                 style={{ fontWeight: 500 }}
                 title="删除项目 (prompts 不会被删,只是从项目移出)"
               >
-                <span>🗑️</span>
-                <span>删除项目</span>
+                删除
               </button>
             </div>
             {selectedProject.description && (
