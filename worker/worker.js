@@ -711,6 +711,23 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// v34: MCP JSON-RPC 2.0 helpers
+function mcpResult(id, result) {
+  return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
+}
+function mcpError(id, code, message) {
+  return new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    id: id ?? null,
+    error: { code, message },
+  }), {
+    status: code === -32700 || code === -32600 ? 400 : 200,  // JSON-RPC 错误本身仍 2xx
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
+}
+
 // v32-H: /unsubscribe 页面 (HTML 直出)
 function unsubHtml(success, message) {
   const color = success ? "#7c3aed" : "#dc2626";
@@ -1637,6 +1654,123 @@ Now translate the user's prompt to this target platform's optimal style. Output 
           status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
         });
       }
+    }
+
+    // ─── /mcp (v34): MCP HTTP server — Claude Code / Cursor / Copilot CLI 都能用 ──
+    // 协议: JSON-RPC 2.0 over HTTP (MCP "streamable-http" transport, 不带 SSE 的简化版)
+    // 用法: claude mcp add prompt-ai https://prompt-optimizer-api.prompt-optimizer.workers.dev/mcp
+    // 然后 Claude Code 里就能调 prompt.ai 的 optimize_prompt 工具
+    if (url.pathname === "/mcp") {
+      // 允许 OPTIONS 预检
+      if (request.method === "OPTIONS") {
+        return new Response(null, { headers: CORS_HEADERS });
+      }
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0", error: { code: -32600, message: "Method not allowed; MCP requires POST" }
+        }), { status: 405, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+      }
+
+      let body;
+      try { body = await request.json(); }
+      catch { return mcpError(null, -32700, "Parse error"); }
+
+      const { jsonrpc, id, method, params = {} } = body || {};
+      if (jsonrpc !== "2.0") return mcpError(id, -32600, "Invalid Request: jsonrpc must be '2.0'");
+
+      // ── method: initialize ──
+      if (method === "initialize") {
+        return mcpResult(id, {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "prompt-ai", version: "1.0.0" },
+        });
+      }
+
+      // notifications/initialized — client says it's ready, no response needed
+      if (method === "notifications/initialized") {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+
+      // ── method: tools/list ──
+      if (method === "tools/list") {
+        return mcpResult(id, {
+          tools: [{
+            name: "optimize_prompt",
+            description: "用 prompt.ai 优化一条 prompt — 自动加角色/任务/输出要求,把模糊指令变成专业 prompt。适合需要稳定高质量输出的场景。",
+            inputSchema: {
+              type: "object",
+              properties: {
+                prompt: { type: "string", description: "要优化的 prompt 原文" },
+                target_ai: {
+                  type: "string",
+                  enum: ["any", "chatgpt", "claude", "gemini", "kimi", "deepseek", "minimax"],
+                  description: "目标 AI 模型 (影响优化策略),默认 any",
+                },
+                tone: {
+                  type: "string",
+                  enum: ["Professional", "Friendly", "Concise", "Creative"],
+                  description: "输出语气,默认 Professional",
+                },
+              },
+              required: ["prompt"],
+            },
+          }],
+        });
+      }
+
+      // ── method: tools/call ──
+      if (method === "tools/call") {
+        const { name, arguments: args = {} } = params;
+        if (name !== "optimize_prompt") {
+          return mcpError(id, -32602, `Unknown tool: ${name}`);
+        }
+        const promptText = String(args.prompt || "").trim();
+        if (!promptText) {
+          return mcpError(id, -32602, "Missing required argument: prompt");
+        }
+        const targetAI = args.target_ai || "any";
+        const tone = args.tone || "Professional";
+
+        try {
+          // 复用现有 optimize 逻辑: buildSystemPrompt + callMiniMaxWithRetry + cleanModelOutput
+          // MCP 上下文没有用户 JWT,所以 voice profile / facts 都传 null
+          const systemPrompt = buildSystemPrompt(targetAI, tone, null, null, "general", null, null, null);
+          const userMessage = `请优化以下 prompt(目标 AI: ${targetAI},语气: ${tone}):\n\n${promptText}`;
+          const minimaxPayload = {
+            model: MODEL,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userMessage },
+            ],
+            temperature: 0.3,
+            max_tokens: 3000,
+          };
+          const { response: apiResponse, lastErrorText } = await callMiniMaxWithRetry(env, minimaxPayload);
+          if (!apiResponse.ok) {
+            return mcpError(id, -32603, `Upstream LLM error: ${(lastErrorText || "").slice(0, 200)}`);
+          }
+          const data = await apiResponse.json();
+          const rawContent = data.choices?.[0]?.message?.content || "";
+          const cleaned = cleanModelOutput(rawContent);
+          // 尝试解析 JSON,失败就把整段当 optimized
+          let optimized;
+          try {
+            const parsed = JSON.parse(cleaned);
+            optimized = parsed.optimized || cleaned;
+          } catch {
+            optimized = cleaned;
+          }
+          return mcpResult(id, {
+            content: [{ type: "text", text: optimized }],
+          });
+        } catch (err) {
+          return mcpError(id, -32603, `Internal error: ${err?.message || String(err)}`);
+        }
+      }
+
+      // 其他方法不支持
+      return mcpError(id, -32601, `Method not found: ${method}`);
     }
 
     // ─── /test-email (v33+): 不依赖 JWT/Supabase,直接用 mock 数据走 Resend
