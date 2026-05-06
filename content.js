@@ -1,6 +1,6 @@
 // ============================================================
 // prompt.ai — Content Script
-// 在 AI 对话网站上注入「✨ 优化」浮动按钮 + 接收填入消息
+// Inject the floating "Optimize" button on AI chat sites and handle fill messages
 // ============================================================
 
 (function () {
@@ -8,11 +8,11 @@
 
   const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
 
-  // v13: silent capture 配置
+  // Silent capture endpoints
   const SUPABASE_URL = "https://vyuzkbdxsweaqftyqifh.supabase.co";
   const SUPABASE_ANON_KEY = "sb_publishable_x_ruVcqxkYJNLEVDeQDwwg_H3my-InQ";
 
-  // 平台名映射 (hostname → 简短 platform code)
+  // Map hostname → short platform code
   const PLATFORM_MAP = {
     "chatgpt.com": "chatgpt",
     "chat.openai.com": "chatgpt",
@@ -38,50 +38,50 @@
     "genspark.ai": "genspark",
   };
 
-  // 输入框选择器（按优先级排列）
+  // Input box selectors (in priority order)
   const INPUT_SELECTORS = [
     "#prompt-textarea",                              // ChatGPT
     "textarea.j-search-input",                       // Genspark
-    "textarea.search-input",                         // Genspark (备用)
+    "textarea.search-input",                         // Genspark (fallback)
     "div.chat-input-editor[contenteditable='true']", // Kimi (kimi.com)
     "div.ProseMirror[contenteditable='true']",        // Claude
-    "div[contenteditable='true'][spellcheck]",        // Kimi (旧域名)
+    "div[contenteditable='true'][spellcheck]",        // Kimi (legacy domain)
     "div.ql-editor[contenteditable='true']",          // Gemini
-    "[role='textbox'][contenteditable='true']",       // 通用 ARIA
-    "div[contenteditable='true']",                    // 通用 contenteditable
-    "textarea:not([style*='display: none']):not([style*='opacity: 0'])",  // 可见 textarea
+    "[role='textbox'][contenteditable='true']",       // Generic ARIA
+    "div[contenteditable='true']",                    // Generic contenteditable
+    "textarea:not([style*='display: none']):not([style*='opacity: 0'])",  // Visible textarea
   ];
 
   let floatBtn = null;
   let activeInput = null;
   let currentLang = "zh";
 
-  // v13: silent capture 状态
-  let lastInputText = "";              // 输入框上一次的非空文本 (清空时拿这个)
-  let recentlyFilledByExt = false;     // 插件刚 fillInput,2s 内忽略清空
-  const capturedHashes = new Set();    // 最近 5s 抓过的文本 hash 去重
-  let captureEnabled = true;           // 默认开,用户在 MemoryPanel 可关
-  let jwt = null;                      // 由 Sidebar 同步到 chrome.storage
+  // Silent capture state
+  let lastInputText = "";              // last non-empty input value (used to recover text on clear)
+  let recentlyFilledByExt = false;     // ignore clears within 2s of an extension-driven fillInput
+  const capturedHashes = new Set();    // 5s dedup window of recently captured text hashes
+  let captureEnabled = true;           // default on, user can toggle in MemoryPanel
+  let jwt = null;                      // synced from Sidebar via chrome.storage
   let userId = null;
-  let captureWatcherStarted = false;   // watchForCapture 单例 guard
+  let captureWatcherStarted = false;   // singleton guard for watchForCapture
 
-  // 从 storage 读取语言设置
+  // Read language preference from storage
   if (typeof chrome !== "undefined" && chrome?.storage) {
     chrome.storage.local.get(["promptai_lang"], (res) => {
       if (res.promptai_lang) currentLang = res.promptai_lang;
     });
 
-    // v13: 加载 silent capture 配置 (JWT / userId / captureEnabled)
+    // Load silent capture config (JWT / userId / captureEnabled)
     chrome.storage.local.get(
       ["promptai_jwt", "promptai_user_id", "promptai_capture_enabled"],
       (res) => {
         jwt = res.promptai_jwt || null;
         userId = res.promptai_user_id || null;
-        captureEnabled = res.promptai_capture_enabled !== false; // 默认 true
+        captureEnabled = res.promptai_capture_enabled !== false; // default true
       }
     );
 
-    // v13: 监听 storage 变化 (用户登录/登出/切 toggle 实时生效)
+    // React to storage changes (login/logout/toggle take effect immediately)
     if (chrome.storage.onChanged) {
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== "local") return;
@@ -94,7 +94,7 @@
     }
   }
 
-  // ========= 查找可见输入框 =========
+  // ========= Find a visible input box =========
   function findVisibleInput() {
     for (const sel of INPUT_SELECTORS) {
       const els = document.querySelectorAll(sel);
@@ -105,16 +105,16 @@
     return null;
   }
 
-  // ========= 填入文本到输入框 =========
+  // ========= Fill text into input =========
   function fillInput(el, text) {
-    // v13: 标记"插件刚填入",防止 silent capture 误抓 (插件填入也会触发 input 事件)
+    // Mark "extension just filled"; prevents silent capture from misreading the synthetic input event
     recentlyFilledByExt = true;
     setTimeout(() => { recentlyFilledByExt = false; }, 2500);
 
     el.focus();
 
     if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
-      // React 项目需要通过 nativeInputValueSetter 触发，否则 onChange 不会响应
+      // React needs nativeInputValueSetter; otherwise onChange won't fire
       const proto = el instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
@@ -124,12 +124,12 @@
       } else {
         el.value = text;
       }
-      // 依次触发多个事件，确保 React / Vue 等框架都能响应
+      // Dispatch multiple events so React/Vue/etc. all respond
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "a" }));
       el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a" }));
-      // Genspark 特殊处理：模拟用户真实输入
+      // Genspark needs a real InputEvent to register
       if (el.classList.contains("j-search-input") || el.classList.contains("search-input")) {
         el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
       }
@@ -143,7 +143,7 @@
       sel?.addRange(range);
       document.execCommand("insertText", false, text);
 
-      // 兜底
+      // Fallback if execCommand left the field empty
       if (!el.textContent || el.textContent.trim() === "") {
         el.textContent = text;
       }
@@ -153,7 +153,7 @@
     }
   }
 
-  // ========= 获取输入框文本 =========
+  // ========= Read text from an input =========
   function getInputText(el) {
     if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
       return el.value;
@@ -161,7 +161,7 @@
     return el.innerText || el.textContent || "";
   }
 
-  // ========= v13: silent capture helpers =========
+  // ========= Silent capture helpers =========
 
   // hostname → platform code
   function getCurrentPlatform() {
@@ -169,7 +169,7 @@
     return PLATFORM_MAP[host] || host.split(".")[0] || "unknown";
   }
 
-  // 极简字符串 hash (用于 5s 去重)
+  // Minimal string hash (for 5s dedup)
   function quickHash(str) {
     let h = 0;
     for (let i = 0; i < str.length; i++) {
@@ -179,7 +179,7 @@
     return String(h);
   }
 
-  // 主 capture 函数: POST 到 Supabase prompts 表 (用户 JWT auth, RLS 自动校验)
+  // Main capture: POST to Supabase prompts table (user JWT auth, RLS enforces ownership)
   async function captureSilentPrompt(text) {
     if (!captureEnabled) {
       console.warn("[prompt.ai capture] skip: captureEnabled=false");
@@ -198,14 +198,14 @@
       console.warn("[prompt.ai capture] skip: too long (" + trimmed.length + " chars)");
       return;
     }
-    // 占位符/系统文案过滤 (常见的"输入..." / "Reply..." 等模板)
+    // Filter placeholder/system text (common "type here..." / "Reply..." templates)
     const placeholders = /^(send a message|reply|message |输入|请输入|发送消息|回复|ask anything)/i;
     if (placeholders.test(trimmed)) {
       console.warn("[prompt.ai capture] skip: placeholder-like text");
       return;
     }
 
-    // 5 秒去重 (防 React 重渲染时 input 事件重复触发)
+    // 5s dedup (React can re-fire input events on rerender)
     const hash = quickHash(trimmed);
     if (capturedHashes.has(hash)) {
       console.warn("[prompt.ai capture] skip: duplicate within 5s window");
@@ -218,7 +218,7 @@
     const preview = trimmed.length > 50 ? trimmed.slice(0, 50) + "..." : trimmed;
     console.log(`[prompt.ai capture] platform=${platform} text="${preview}"`);
 
-    // 重试 1 次 (网络瞬断容错,demo 必备)
+    // One retry (transient-network tolerant; required for demo reliability)
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/prompts`, {
@@ -227,7 +227,7 @@
             "Content-Type": "application/json",
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": `Bearer ${jwt}`,
-            // v32-G: 拿回插入的行 id, 后续 patch ai_response_text
+            // Need the inserted row id back so we can patch ai_response_text later
             "Prefer": "return=representation",
           },
           body: JSON.stringify({
@@ -245,29 +245,29 @@
             promptId = Array.isArray(rows) && rows[0] ? rows[0].id : null;
           } catch {}
           console.log(`[prompt.ai capture] ✓ saved to ${platform} id=${promptId}`);
-          // v32-G / v33-δ: 4 家平台启动响应捕获 (ChatGPT + Claude + Kimi + DeepSeek)
+          // Start AI-response capture for the 4 supported platforms
           if (promptId && (platform === "chatgpt" || platform === "claude" || platform === "kimi" || platform === "deepseek")) {
             scheduleResponseCapture(promptId, platform);
           }
           return;
         }
-        // 401 = JWT 过期,不重试 (重试也没用)
+        // 401 = JWT expired; retry won't help
         if (res.status === 401) {
-          console.error("[prompt.ai capture] ✗ 401 unauthorized — JWT 可能过期,请刷新 sidebar");
+          console.error("[prompt.ai capture] ✗ 401 unauthorized — JWT may be expired, refresh sidebar");
           return;
         }
         console.warn(`[prompt.ai capture] attempt ${attempt + 1} failed: ${res.status}`);
       } catch (err) {
         console.warn(`[prompt.ai capture] attempt ${attempt + 1} network error:`, err?.message);
       }
-      // 1 秒后重试
+      // Wait 1s before retry
       if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
     }
     console.error("[prompt.ai capture] ✗ all retries failed");
   }
 
-  // ========= v32-G / v33-δ: AI 响应捕获 (ChatGPT + Claude + Kimi + DeepSeek) =========
-  // 选择器: 抓"最后一条 assistant 消息"的纯文本 — 每家放多个 fallback,DOM 改了至少一个能命中
+  // ========= AI response capture (ChatGPT + Claude + Kimi + DeepSeek) =========
+  // Selectors target the latest assistant message; multiple fallbacks per platform so DOM tweaks don't break us.
   const ASSISTANT_SELECTORS = {
     chatgpt: [
       "[data-message-author-role='assistant']",
@@ -278,7 +278,7 @@
       "[data-testid^='message-content']",
       "div.font-claude-response",
     ],
-    // v33-δ: Kimi (kimi.com) — 用 markdown 容器 / role=assistant 多选择器兜底
+    // Kimi (kimi.com) — markdown container / role=assistant fallbacks
     kimi: [
       "div[class*='assistant']",
       "div[class*='answer-bubble']",
@@ -286,7 +286,7 @@
       ".markdown-body:not(:has(textarea))",
       "div[data-role='assistant']",
     ],
-    // v33-δ: DeepSeek (chat.deepseek.com) — 同上多选择器兜底
+    // DeepSeek (chat.deepseek.com) — same pattern
     deepseek: [
       "div[class*='ds-markdown']",
       "div[data-role='assistant']",
@@ -303,14 +303,14 @@
       if (nodes && nodes.length > 0) {
         const last = nodes[nodes.length - 1];
         const text = (last.innerText || last.textContent || "").trim();
-        // 防误抓: 文本要长于 20 字 + 不能是输入框 placeholder
+        // Avoid false hits: must be > 20 chars and not a placeholder
         if (text.length > 20) return text;
       }
     }
     return null;
   }
 
-  // 调度: 在 prompt 入库后 ~3s 启动 watcher,polling 间隔 1.5s,直到文本稳定 3s 或 60s 超时
+  // Schedule: ~3s after prompt insert, poll every 1.5s until text is stable for 3s or 60s timeout
   function scheduleResponseCapture(promptId, platform) {
     let prevText = "";
     let stableSince = 0;
@@ -318,7 +318,7 @@
     const POLL_MS = 1500;
     const STABLE_MS = 3000;
     const TIMEOUT_MS = 60000;
-    const startDelay = 2500; // 给 AI 一点时间开始流式输出
+    const startDelay = 2500; // give the AI time to start streaming
 
     setTimeout(function tick() {
       totalElapsed += POLL_MS;
@@ -327,7 +327,7 @@
         if (text === prevText) {
           stableSince += POLL_MS;
           if (stableSince >= STABLE_MS) {
-            // 稳定了 → 写回 DB
+            // Stable → write back to DB
             patchPromptResponse(promptId, text);
             return;
           }
@@ -338,7 +338,7 @@
       }
       if (totalElapsed >= TIMEOUT_MS) {
         if (prevText) {
-          // 超时但有文本 → 也写,毕竟 demo 不能丢
+          // Timed out but we have text → still write (better partial than nothing for demo)
           console.warn(`[prompt.ai response] timeout but writing partial (${prevText.length} chars)`);
           patchPromptResponse(promptId, prevText);
         } else {
@@ -352,7 +352,7 @@
 
   async function patchPromptResponse(promptId, responseText) {
     if (!jwt || !userId || !promptId) return;
-    const trimmed = String(responseText || "").trim().slice(0, 16000); // 上限 16K
+    const trimmed = String(responseText || "").trim().slice(0, 16000); // cap at 16K
     try {
       const res = await fetch(
         `${SUPABASE_URL}/rest/v1/prompts?id=eq.${promptId}&user_id=eq.${userId}`,
@@ -380,7 +380,7 @@
     }
   }
 
-  // 输入框监听: 检测"清空"动作 = 用户发送了 prompt
+  // Input watcher: detect "clear" action = user submitted prompt
   function watchForCapture() {
     if (captureWatcherStarted) return;
     captureWatcherStarted = true;
@@ -388,7 +388,7 @@
     document.addEventListener("input", (e) => {
       const el = e.target;
       if (!el || !el.matches) return;
-      // 只在已知 input selector 上工作
+      // Only on known input selectors
       let isKnownInput = false;
       for (const sel of INPUT_SELECTORS) {
         try { if (el.matches(sel)) { isKnownInput = true; break; } } catch {}
@@ -397,14 +397,14 @@
 
       const currentText = getInputText(el).trim();
 
-      // 检测"清空": 上次有文本 → 现在空 = 大概率是用户按了 Enter / 点了 Send
+      // Detect "clear": had text → now empty = likely user pressed Enter / clicked Send
       if (lastInputText && !currentText) {
         if (recentlyFilledByExt) {
-          // 是插件刚 fillInput → 不算用户发送 (但更新 lastInputText 防下轮触发)
+          // Extension just filled → not a user submit (but update lastInputText to suppress next round)
           lastInputText = currentText;
           return;
         }
-        // 真用户发送了
+        // Real user submit
         captureSilentPrompt(lastInputText);
       }
 
@@ -412,7 +412,7 @@
     }, true);
   }
 
-  // ========= 创建浮动按钮 =========
+  // ========= Create floating button =========
   function createFloatBtn() {
     const btn = document.createElement("button");
     btn.className = "po-float-btn";
@@ -427,7 +427,7 @@
     return btn;
   }
 
-  // ========= 定位按钮 =========
+  // ========= Position the button =========
   function positionBtn(el) {
     if (!floatBtn) floatBtn = createFloatBtn();
     floatBtn.innerHTML = currentLang === "zh" ? "✨ 优化" : "✨ Optimize";
@@ -439,7 +439,7 @@
     floatBtn.style.display = "flex";
   }
 
-  // ========= 优化逻辑 =========
+  // ========= Optimize handler =========
   async function handleOptimize() {
     if (!activeInput) return;
     const text = getInputText(activeInput).trim();
@@ -481,7 +481,7 @@
     setTimeout(() => { t.classList.add("po-fade-out"); setTimeout(() => t.remove(), 300); }, 2000);
   }
 
-  // ========= 监听消息（Side Panel 发来的填入请求） =========
+  // ========= Listen for messages (fill requests from Side Panel) =========
   if (typeof chrome !== "undefined" && chrome?.runtime) {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === "FILL_INPUT") {
@@ -503,14 +503,14 @@
     });
   }
 
-  // ========= 监听输入框 focus =========
+  // ========= Watch input focus =========
   function watchInputs() {
     document.addEventListener("focusin", (e) => {
       const el = e.target;
       for (const sel of INPUT_SELECTORS) {
         if (el.matches && el.matches(sel)) {
           activeInput = el;
-          // v15: 重置 lastInputText (新输入框 → 切换会话/页面,旧文本失效)
+          // Reset lastInputText when switching inputs (new chat / new page → old text is stale)
           lastInputText = getInputText(el).trim();
           positionBtn(el);
           return;
@@ -518,12 +518,12 @@
       }
     }, true);
 
-    // 定期检查（有些 SPA 动态渲染输入框）
+    // Periodic check (some SPAs re-render the input dynamically)
     setInterval(() => {
       const input = findVisibleInput();
       if (input && input !== activeInput) {
         activeInput = input;
-        // v15: 同样重置 lastInputText
+        // Same reset on dynamic swap
         lastInputText = getInputText(input).trim();
       }
     }, 2000);
@@ -535,9 +535,9 @@
     }, { passive: true });
   }
 
-  // ========= 初始化 =========
+  // ========= Init =========
   function init() {
-    // v13: silent capture 监听独立启动 (不依赖 activeInput,document 级 input 事件)
+    // Silent capture watcher starts independently of activeInput (document-level input event)
     watchForCapture();
 
     const observer = new MutationObserver(() => {
@@ -550,7 +550,7 @@
     observer.observe(document.body, { childList: true, subtree: true });
     setTimeout(() => { observer.disconnect(); watchInputs(); }, 5000);
 
-    // 立即检查
+    // Immediate check
     if (findVisibleInput()) watchInputs();
   }
 

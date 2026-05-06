@@ -1,12 +1,12 @@
 // ============================================================
-// Prompt Optimizer — Cloudflare Worker 后端代理
-// v7.5: Phase 1 智能优化升级 — 动态策略+评分+Guardrails
+// Prompt Optimizer — Cloudflare Worker backend proxy
+// v7.5: Phase 1 — dynamic strategy + scoring + guardrails
 // ============================================================
 
 const MINIMAX_API = "https://api.minimaxi.com/v1/chat/completions";
 const MODEL = "MiniMax-M2.7";
 
-// ─── Guardrails: 检测 prompt 注入 & 有害内容 ────────────────
+// ─── Guardrails: detect prompt injection and harmful content ────────────────
 const INJECTION_PATTERNS = [
   /ignore\s+previous\s+instructions/i,
   /ignore\s+all\s+instructions/i,
@@ -42,13 +42,13 @@ function checkGuardrails(text) {
   return null;
 }
 
-// ─── 用户风格画像 → system prompt 块 ─────────────────────
+// ─── User style profile → system prompt block ─────────────────────
 // userProfile shape: { sample_count, top_tone, avg_input_len, avg_optimized_len, up_rate }
 // topExamples shape: [{ original_text, optimized_text, combined_score, has_upvote }]
 function buildUserProfileBlock(userProfile, taskType) {
   if (!userProfile || typeof userProfile !== "object") return "";
   const n = Number(userProfile.sample_count || 0);
-  if (n < 3) return ""; // 样本不足，跳过个性化
+  if (n < 3) return ""; // not enough samples; skip personalization
   const lines = [];
   lines.push(`\n## USER STYLE PROFILE (task: ${taskType || "general"}, based on ${n} past prompts)`);
   if (userProfile.top_tone) lines.push(`- preferred tone: ${userProfile.top_tone}`);
@@ -63,7 +63,7 @@ function buildUserProfileBlock(userProfile, taskType) {
 
 function buildExamplesBlock(topExamples) {
   if (!Array.isArray(topExamples) || topExamples.length === 0) return "";
-  // 单条裁剪到 ~600 chars，整块预算 ~1300 chars (~300 token)
+  // Trim each to ~600 chars; total budget ~1300 chars (~300 tokens)
   const safe = topExamples.slice(0, 2).map((ex, i) => {
     const raw = String(ex.original_text || "").slice(0, 200);
     const opt = String(ex.optimized_text || "").slice(0, 600);
@@ -73,11 +73,11 @@ function buildExamplesBlock(topExamples) {
   return `\n## REFERENCE EXAMPLES${safe}\nMatch the structure and style of these past examples when sensible.`;
 }
 
-// v8.1: 反向样本 — 用户曾明确点踩的优化，告诉 LLM 不要复制这种风格
+// v8.1: negative samples — outputs the user explicitly downvoted; tell the LLM not to copy this style
 // userDislikes shape: [{ original_text, optimized_text, disliked_at }]
 function buildUserDislikesBlock(userDislikes) {
   if (!Array.isArray(userDislikes) || userDislikes.length === 0) return "";
-  // 单条裁剪到 ~400 chars，整块预算 ~1000 chars
+  // Trim each to ~400 chars; total budget ~1000 chars
   const safe = userDislikes.slice(0, 3).map((ex, i) => {
     const raw = String(ex.original_text || "").slice(0, 150);
     const opt = String(ex.optimized_text || "").slice(0, 400);
@@ -87,11 +87,11 @@ function buildUserDislikesBlock(userDislikes) {
   return `\n## STYLES TO AVOID (the user explicitly disliked these in the past)${safe}\nDo NOT replicate the structure, tone, or phrasing of these rejected outputs. The user clicked thumbs-down on them — they are anti-examples.`;
 }
 
-// v10: LLM 抽取出来的用户偏好事实 — 信息密度最高，放在 system prompt 末尾
+// v10: LLM-extracted user-preference facts — highest signal density; placed at end of system prompt
 // userFacts shape: [{ fact, confidence, task_type }]
 function buildUserFactsBlock(userFacts) {
   if (!Array.isArray(userFacts) || userFacts.length === 0) return "";
-  // 单条 ≤ 80 chars，整块预算 ~1000 chars (~10 facts)
+  // Each ≤ 80 chars; total budget ~1000 chars (~10 facts)
   const lines = userFacts.slice(0, 10).map((f, i) => {
     const text = String(f?.fact || "").trim().slice(0, 300);
     if (!text) return null;
@@ -102,19 +102,19 @@ function buildUserFactsBlock(userFacts) {
   return `\n## USER PROFILE FACTS (extracted from past usage patterns — these are STABLE preferences)\n${lines}\nThese facts describe who the user IS and what they consistently prefer. Apply them to the optimized output unless the current input clearly overrides them.`;
 }
 
-// v11: LLM 合成的"声音指纹" — 比 facts 列表更连贯、更高优先级
-// userVoiceProfile shape: string (150-300 chars 中文叙事)
+// v11: LLM-synthesized "voice fingerprint" — more cohesive than facts list, higher priority
+// userVoiceProfile shape: string (150-300 char Chinese narrative)
 function buildVoiceProfileBlock(userVoiceProfile) {
   const text = String(userVoiceProfile || "").trim();
   if (!text || text.length < 30) return "";
-  // 截断防爆 (max 2000 chars,匹配 SQL CHECK)
+  // Cap to prevent overflow (max 2000 chars, matches SQL CHECK)
   const safe = text.slice(0, 2000);
   return `\n## YOUR VOICE PROFILE (the unified voice you should write IN — derived from this user's stable patterns)\n${safe}`;
 }
 
-// ─── 动态系统提示词（根据 targetAI 差异化）─────────────────
+// ─── Dynamic system prompt (varies by targetAI) ─────────────────
 function buildSystemPrompt(targetAI = "any", tone = "Professional", userProfile = null, topExamples = null, taskType = "general", userDislikes = null, userFacts = null, userVoiceProfile = null) {
-  // 目标 AI 策略
+  // Target AI strategy
   let targetStrategy = "";
 
   if (["chatgpt", "gemini"].includes(targetAI)) {
@@ -149,7 +149,7 @@ Optimize for broad compatibility across all major AI systems.
 - Explicit role + task + output format`;
   }
 
-  // 语气指导
+  // Tone guide
   const toneGuide = {
     Professional: "formal, precise, business-appropriate",
     Casual: "friendly, conversational, approachable",
@@ -159,7 +159,7 @@ Optimize for broad compatibility across all major AI systems.
   };
   const toneDesc = toneGuide[tone] || "balanced and clear";
 
-  // 个性化记忆：声音指纹（v11，最顶部）+ 风格画像 + 历史高分示例 + 反向样本（v8.1）+ LLM 抽取事实（v10）
+  // Personalization stack: voice (v11, top) + style profile + top examples + dislikes (v8.1) + extracted facts (v10)
   const voiceProfileBlock = buildVoiceProfileBlock(userVoiceProfile);
   const userProfileBlock = buildUserProfileBlock(userProfile, taskType);
   const examplesBlock = buildExamplesBlock(topExamples);
@@ -362,14 +362,14 @@ function normalizeResult(result, lang = "zh") {
   };
 }
 
-// 清理模型输出：去掉 <think> 标签和 markdown 代码块
+// Strip <think> blocks and markdown code fences from model output
 function cleanModelOutput(raw) {
   let text = raw;
 
-  // 1. 去掉 <think>...</think>
+  // 1. Drop <think>...</think>
   text = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
-  // 2. 去掉 markdown 代码块 ```json ... ```
+  // 2. Drop ```json ... ``` markdown code blocks
   const codeBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (codeBlockMatch) {
     text = codeBlockMatch[1].trim();
@@ -378,7 +378,7 @@ function cleanModelOutput(raw) {
   return text;
 }
 
-// ─── Resend 发送确认邮件 ────────────────────────────────────
+// ─── Resend confirmation email ────────────────────────────────────
 async function sendWaitlistEmail(email, lang, resendApiKey) {
   const isZh = lang === "zh";
   const subject = isZh
@@ -461,7 +461,7 @@ async function sendWaitlistEmail(email, lang, resendApiKey) {
   });
 }
 
-// ─── Supabase 写入 waitlist ─────────────────────────────────
+// ─── Supabase: insert into waitlist ─────────────────────────────────
 async function insertWaitlist(email, source, lang, supabaseUrl, supabaseKey) {
   return fetch(`${supabaseUrl}/rest/v1/waitlist`, {
     method: "POST",
@@ -476,18 +476,18 @@ async function insertWaitlist(email, source, lang, supabaseUrl, supabaseKey) {
 }
 
 // ─── v20: AI Weekly Insights helpers ─────────────────────────
-// 从 request 拿 JWT,验证身份,聚合 7 天数据,调 LLM 生成洞察,渲染 HTML
+// Pull JWT from request, verify, aggregate 7-day data, call LLM for insight, render HTML
 async function generateInsightsFromRequest(env, request) {
   if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
     return { error: "Supabase not configured", status: 500 };
   }
 
-  // 1. 拿 JWT (从 Authorization header)
+  // 1. Pull JWT from Authorization header
   const authHeader = request.headers.get("Authorization") || "";
   const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!jwt) return { error: "Missing Authorization Bearer JWT", status: 401 };
 
-  // 2. 通过 Supabase auth 验证 JWT 拿 user info
+  // 2. Verify JWT via Supabase auth and fetch user info
   const userInfoRes = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, {
     headers: {
       "apikey": env.SUPABASE_ANON_KEY,
@@ -513,21 +513,21 @@ async function generateInsightsForUser(env, userId, email, authToken, unsubToken
     "Authorization": `Bearer ${authToken}`,
   };
 
-  // 拉 7 天 prompts
+  // Pull last 7 days of prompts
   const promptsRes = await fetch(
     `${SUPABASE_URL}/rest/v1/prompts?user_id=eq.${userId}&created_at=gte.${sevenDaysAgo}&select=platform,task_type,source,created_at,original_text&order=created_at.desc&limit=200`,
     { headers }
   );
   const prompts = promptsRes.ok ? await promptsRes.json() : [];
 
-  // 拉本周新 facts
+  // Pull facts added this week
   const factsRes = await fetch(
     `${SUPABASE_URL}/rest/v1/user_facts?user_id=eq.${userId}&extracted_at=gte.${sevenDaysAgo}&select=fact,confidence,task_type&order=confidence.desc&limit=10`,
     { headers }
   );
   const newFacts = factsRes.ok ? await factsRes.json() : [];
 
-  // 拉 voice profile
+  // Pull voice profile
   const voiceRes = await fetch(
     `${SUPABASE_URL}/rest/v1/user_voice_profiles?user_id=eq.${userId}&select=voice_profile,synthesized_at&limit=1`,
     { headers }
@@ -536,7 +536,7 @@ async function generateInsightsForUser(env, userId, email, authToken, unsubToken
   const voice = voiceData[0] || null;
   const voiceUpdatedThisWeek = voice && new Date(voice.synthesized_at) >= new Date(sevenDaysAgo);
 
-  // 聚合
+  // Aggregate
   const total = prompts.length;
   const byPlatform = {};
   const byTask = {};
@@ -553,7 +553,7 @@ async function generateInsightsForUser(env, userId, email, authToken, unsubToken
   const topTasks = Object.entries(byTask).sort((a, b) => b[1] - a[1]).slice(0, 3);
   const platformsCount = Object.keys(byPlatform).length;
 
-  // LLM 生成本周观察
+  // LLM-generated weekly observation
   let insightText = total >= 3
     ? "本期 prompt.ai 已记录到你的活跃使用,继续多用会有更精准的画像。"
     : "本周数据较少,多用几次 prompt.ai 让 AI 更懂你。";
@@ -589,11 +589,11 @@ async function generateInsightsForUser(env, userId, email, authToken, unsubToken
     }
   }
 
-  // 渲染 HTML 邮件
+  // Render HTML email
   const dateStr = `${new Date().getFullYear()}/${new Date().getMonth() + 1}/${new Date().getDate()}`;
   const subject = `📊 你这周的 AI 使用画像 · ${dateStr}`;
 
-  // Top platforms 渲染成 mini bars
+  // Render top platforms as mini bars
   const maxPlatformCount = topPlatforms.length > 0 ? topPlatforms[0][1] : 1;
   const platformBarsHtml = topPlatforms.map(([p, c]) => {
     const pct = Math.round((c / maxPlatformCount) * 100);
@@ -700,7 +700,7 @@ async function generateInsightsForUser(env, userId, email, authToken, unsubToken
   };
 }
 
-// HTML escape (避免 voice 或 fact 内容里的特殊字符破坏邮件)
+// HTML escape (prevents special chars in voice/fact content from breaking the email)
 function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;",
@@ -711,7 +711,7 @@ function escapeHtml(s) {
   }[c]));
 }
 
-// v32-H: /unsubscribe 页面 (HTML 直出)
+// v32-H: /unsubscribe page (HTML response)
 function unsubHtml(success, message) {
   const color = success ? "#7c3aed" : "#dc2626";
   const emoji = success ? "👋" : "⚠️";
@@ -736,7 +736,7 @@ export default {
 
     const url = new URL(request.url);
 
-    // ─── /send-report 路由：发送 HTML 周报邮件 ───────────────
+    // ─── /send-report route: send weekly HTML report email ───────────────
     if (url.pathname === "/send-report") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -894,7 +894,7 @@ export default {
       }
     }
 
-    // ─── /waitlist 路由 ────────────────────────────────────
+    // ─── /waitlist route ────────────────────────────────────
     if (url.pathname === "/waitlist") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -909,14 +909,14 @@ export default {
           });
         }
 
-        // 写入 Supabase
+        // Write to Supabase
         const dbRes = await insertWaitlist(
           email, source, lang,
           env.SUPABASE_URL,
           env.SUPABASE_ANON_KEY
         );
 
-        // 409 = 邮箱已存在，也算成功
+        // 409 = email already exists; treat as success
         if (!dbRes.ok && dbRes.status !== 409) {
           const errText = await dbRes.text();
           console.error("Supabase error:", errText);
@@ -925,8 +925,8 @@ export default {
           });
         }
 
-        // 发确认邮件（仅首次注册，409 不重发）
-        // 用 try-catch 包裹，邮件失败不影响 waitlist 写入成功
+        // Send confirmation email (only on first signup; 409 → no resend)
+        // Wrap in try-catch so email failure doesn't fail the waitlist insert
         if (dbRes.ok || dbRes.status === 201) {
           try {
             await sendWaitlistEmail(email, lang, env.RESEND_API_KEY);
@@ -946,7 +946,7 @@ export default {
       }
     }
 
-    // ─── /send-invite 路由：发送邀请码邮件 ───────────────
+    // ─── /send-invite route: send invite-code email ───────────────
     if (url.pathname === "/send-invite") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1047,11 +1047,11 @@ export default {
       }
     }
 
-    // ─── /embed 路由 (v9)：用 Cloudflare Workers AI 跑 bge-m3 拿向量 ───────
-    // 前端在 optimize 前先调一次拿到 query embedding，用于：
-    //   1) 调 get_top_user_prompts_semantic 做语义 few-shot 检索
-    //   2) optimize 完成后，写回 prompts.embedding 列（避免再算一遍）
-    // 模型 @cf/baai/bge-m3：1024 维，多语言（中文友好），免费额度 10k neurons/day
+    // ─── /embed (v9): get vector via Cloudflare Workers AI bge-m3 ───────
+    // Frontend calls this before optimize to get the query embedding, used for:
+    //   1) get_top_user_prompts_semantic for semantic few-shot retrieval
+    //   2) Writing back to prompts.embedding after optimize (avoids re-computing)
+    // Model @cf/baai/bge-m3: 1024 dims, multilingual (Chinese-friendly), free tier 10k neurons/day
     if (url.pathname === "/embed") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1100,9 +1100,9 @@ export default {
       }
     }
 
-    // ─── /extract-facts 路由 (v10)：从用户最近 N 条 prompt 抽 LLM 偏好事实 ──
-    // 调 MiniMax-M2.7 把"用户偏好"提炼成结构化 JSON 事实
-    // 前端拿到 facts 后通过 add_user_facts RPC 写入 user_facts 表
+    // ─── /extract-facts (v10): extract user-preference facts from N recent prompts ──
+    // Calls MiniMax-M2.7 to distill user preferences into structured JSON facts
+    // Frontend then writes facts via add_user_facts RPC into user_facts table
     if (url.pathname === "/extract-facts") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1116,7 +1116,7 @@ export default {
             status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
           });
         }
-        // 上限 15 条，防止 token 爆炸
+        // Cap at 15 to prevent token blow-up
         const sample = prompts.slice(0, 15).map((p, i) => {
           const orig = String(p?.original_text || "").slice(0, 200);
           const opt = String(p?.optimized_text || "").slice(0, 400);
@@ -1164,7 +1164,7 @@ EXAMPLE OUTPUT:
             { role: "system", content: FACT_EXTRACTION_PROMPT },
             { role: "user", content: userMsg },
           ],
-          temperature: 0.2,  // 抽取任务要稳，不要 creative
+          temperature: 0.2,  // extraction must be stable, not creative
           max_tokens: 1500,
         };
 
@@ -1192,7 +1192,7 @@ EXAMPLE OUTPUT:
           });
         }
 
-        // 严格校验 + 清洗每条 fact
+        // Strict validation + cleansing per fact
         const validFacts = facts
           .filter(f => f && typeof f.fact === "string" && f.fact.trim().length >= 5)
           .map(f => ({
@@ -1214,9 +1214,9 @@ EXAMPLE OUTPUT:
       }
     }
 
-    // ─── /synthesize-voice 路由 (v11)：把 facts 列表压成一段叙事性的"声音指纹" ──
-    // L6: v10 给离散事实清单,v11 给 LLM 看到的是一段连贯的"用户是谁"叙事
-    // 调 MiniMax-M2.7 (temp=0.4 — 需要一定创造性把事实串成自然语言)
+    // ─── /synthesize-voice (v11): compress facts list into a narrative voice fingerprint ──
+    // L6: v10 gives discrete facts; v11 gives the LLM a coherent "who is this user" narrative
+    // Calls MiniMax-M2.7 (temp=0.4 — needs some creativity to weave facts into natural language)
     if (url.pathname === "/synthesize-voice") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1231,7 +1231,7 @@ EXAMPLE OUTPUT:
           });
         }
 
-        // 整理 facts 给 LLM:按 confidence 倒序,带 task_type 标注
+        // Sort facts for the LLM: confidence descending, with task_type annotation
         const sortedFacts = facts
           .filter(f => f && typeof f.fact === "string" && f.fact.trim())
           .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0))
@@ -1278,7 +1278,7 @@ OUTPUT: ONLY the voice profile paragraph itself. No JSON, no markdown wrapper, n
             { role: "system", content: VOICE_SYNTHESIS_PROMPT },
             { role: "user", content: userMsg },
           ],
-          temperature: 0.4,  // 需要一点创造性,但不能太散
+          temperature: 0.4,  // some creativity, but not too scattered
           max_tokens: 800,
         };
 
@@ -1295,7 +1295,7 @@ OUTPUT: ONLY the voice profile paragraph itself. No JSON, no markdown wrapper, n
         const rawContent = data.choices?.[0]?.message?.content || "";
         const cleaned = cleanModelOutput(rawContent).trim();
 
-        // 校验长度 (30-2000 chars,匹配 SQL CHECK)
+        // Validate length (30-2000 chars, matches SQL CHECK)
         if (cleaned.length < 30 || cleaned.length > 2000) {
           console.error("Voice profile out of range:", cleaned.length, cleaned.slice(0, 100));
           return new Response(JSON.stringify({
@@ -1321,9 +1321,9 @@ OUTPUT: ONLY the voice profile paragraph itself. No JSON, no markdown wrapper, n
       }
     }
 
-    // ─── /synthesize-project-brief 路由 (v29) ─────────────────
-    // 给项目生成一段简报: 主题 + 用户在该项目里的风格 + 常用术语
-    // 用户切到新 AI 工具时,一键复制这段贴进去 = 立刻 onboard 项目 context
+    // ─── /synthesize-project-brief (v29) ─────────────────
+    // Generate a brief for the project: theme + user style in this project + common terminology
+    // When user switches AI tools, paste this snippet to instantly onboard the project context
     if (url.pathname === "/synthesize-project-brief") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1343,7 +1343,7 @@ OUTPUT: ONLY the voice profile paragraph itself. No JSON, no markdown wrapper, n
           });
         }
 
-        // 整理 prompts (按时间倒序,take recent 20)
+        // Sort prompts (newest first, take recent 20)
         const recent = prompts.slice(0, 20);
         const sample = recent.map((p, i) => {
           const orig = String(p?.original_text || "").slice(0, 200);
@@ -1415,9 +1415,9 @@ OUTPUT: ONLY the narrative paragraph itself.`;
       }
     }
 
-    // ─── /translate-style 路由 (v16): 把 prompt 转成另一个 AI 平台的最佳风格 ──
-    // 比赛级演示功能: "把这条 ChatGPT 风格 prompt 转成 Claude 风格"
-    // 4 平台 style guides 显式区分,LLM 输出适配后的版本
+    // ─── /translate-style (v16): convert prompt to another AI platform's optimal style ──
+    // Demo feature: "convert this ChatGPT-style prompt into Claude style"
+    // 4 platform style guides explicitly distinguished; LLM outputs adapted version
     if (url.pathname === "/translate-style") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1513,7 +1513,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
             { role: "system", content: TRANSLATE_SYSTEM_PROMPT },
             { role: "user", content: cleaned },
           ],
-          temperature: 0.5,  // 需要一点创造性来重新表达,但不能漂移意图
+          temperature: 0.5,  // some creativity to re-express, but must not drift intent
           max_tokens: 2000,
         };
 
@@ -1553,7 +1553,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
-    // ─── /generate-insights (v20): 生成本周 AI 洞察 HTML (供前端预览或邮件发送) ──
+    // ─── /generate-insights (v20): generate weekly AI insights HTML (preview or email-ready) ──
     if (url.pathname === "/generate-insights") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1578,7 +1578,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
-    // ─── /unsubscribe (v32-H): 通过 token 一键关闭周报订阅 ─────
+    // ─── /unsubscribe (v32-H): one-click weekly-report unsubscribe via token ─────
     if (url.pathname === "/unsubscribe") {
       const token = url.searchParams.get("token");
       if (!token || token.length < 8) {
@@ -1621,7 +1621,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
-    // ─── /cron-test (v32-H, dev only): 手动触发 scheduled() 流程便于本地验证 ─
+    // ─── /cron-test (v32-H, dev only): manually trigger scheduled() for local verification ─
     if (url.pathname === "/cron-test") {
       const adminKey = url.searchParams.get("key");
       if (!adminKey || adminKey !== env.CRON_TEST_KEY) {
@@ -1639,9 +1639,9 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
-    // ─── /test-email (v33+): 不依赖 JWT/Supabase,直接用 mock 数据走 Resend
-    // 用法: GET /test-email?to=xxx@example.com&key=<TEST_EMAIL_KEY>
-    // 返回: { ok, status, resend_id?, error?, from, to, subject } — 用来 5 秒验证 Resend 配置 + 域名
+    // ─── /test-email (v33+): no JWT/Supabase required; sends mock data via Resend
+    // Usage: GET /test-email?to=xxx@example.com&key=<TEST_EMAIL_KEY>
+    // Returns: { ok, status, resend_id?, error?, from, to, subject } — 5-second sanity check on Resend + domain config
     if (url.pathname === "/test-email") {
       const adminKey = url.searchParams.get("key");
       if (!adminKey || adminKey !== env.TEST_EMAIL_KEY) {
@@ -1662,7 +1662,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
       const dateStr = new Date().toISOString().slice(0, 16).replace("T", " ");
       const subject = `🧪 prompt.ai · 测试邮件 ${dateStr} UTC`;
-      // 用真实模板的精简版 (跟 weekly insights 同骨架,这样能验证视觉一致性)
+      // Slim version of the real template (same skeleton as weekly insights → verifies visual consistency)
       const html = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:#f4f4f6;margin:0;padding:32px 16px;">
@@ -1723,7 +1723,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
             headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
           });
         } else {
-          // Resend 报错 — 把原文返回方便诊断 (常见: 422 域名未 verified / 401 key 失效)
+          // Resend errored — return raw body for diagnosis (common: 422 unverified domain / 401 invalid key)
           return new Response(JSON.stringify({
             ok: false,
             from: "hi@prompt-ai.work",
@@ -1750,7 +1750,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
-    // ─── /send-insights-email (v20): 立即发送本周洞察邮件到用户邮箱 ──
+    // ─── /send-insights-email (v20): send the weekly insights email immediately ──
     if (url.pathname === "/send-insights-email") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1793,7 +1793,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
             status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
           });
         }
-        // 更新 last_insights_sent_at (用户 JWT,RLS 允许)
+        // Update last_insights_sent_at (user JWT, RLS allows)
         const authHeader = request.headers.get("Authorization") || "";
         const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
         if (jwt && env.SUPABASE_URL && env.SUPABASE_ANON_KEY) {
@@ -1819,9 +1819,9 @@ Now translate the user's prompt to this target platform's optimal style. Output 
       }
     }
 
-    // ─── /delete-account 路由 (v22): GDPR 一键永久删除账号 ──
-    // 流程: 验证 user JWT → 用 service_role 调 supabase auth admin
-    //       → DELETE auth.users/{id} → ON DELETE CASCADE 级联删除所有数据
+    // ─── /delete-account (v22): GDPR one-click permanent account deletion ──
+    // Flow: verify user JWT → use service_role to call supabase auth admin
+    //       → DELETE auth.users/{id} → ON DELETE CASCADE removes all related data
     if (url.pathname === "/delete-account") {
       if (request.method !== "POST") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -1834,7 +1834,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
             status: 503, headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
           });
         }
-        // 验证 user JWT
+        // Verify user JWT
         const authHeader = request.headers.get("Authorization") || "";
         const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
         if (!jwt) {
@@ -1861,8 +1861,8 @@ Now translate the user's prompt to this target platform's optimal style. Output 
           });
         }
 
-        // 用 service_role 调 admin API 删 auth.users
-        // ON DELETE CASCADE 会自动级联删除 prompts/facts/voice/profiles 等
+        // Use service_role to call admin API to delete auth.users
+        // ON DELETE CASCADE will automatically remove prompts/facts/voice/profiles/etc
         const deleteRes = await fetch(`${env.SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
           method: "DELETE",
           headers: {
@@ -1907,7 +1907,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
         );
       }
 
-      // ─── Guardrails 防护 ───────────────────────────────────
+      // ─── Guardrails check ───────────────────────────────────
       const guardResult = checkGuardrails(prompt.trim());
       if (guardResult) {
         return new Response(
@@ -1921,28 +1921,28 @@ Now translate the user's prompt to this target platform's optimal style. Output 
         );
       }
 
-      // ─── 构建动态系统提示词（v11: + voice profile）────
+      // ─── Build dynamic system prompt (v11: + voice profile) ────
       const SYSTEM_PROMPT = buildSystemPrompt(targetAI, tone, userProfile, topExamples, taskType, userDislikes, userFacts, userVoiceProfile);
 
-      // ─── 构建消息列表（支持多轮对话历史）────────────────────
-      // 历史消息：最多保留最近 6 条，避免 token 过多
+      // ─── Build messages list (supports multi-turn dialogue history) ────────────────────
+      // History: keep last 6 to avoid token blow-up
       const validHistory = Array.isArray(messages)
         ? messages.slice(-6).filter(m => m.role && m.content)
         : [];
 
-      // 当前用户消息
+      // Current user message
       const userMessage = isRefinement
-        ? prompt.trim() // 二次优化：直接用指令（前端已格式化）
+        ? prompt.trim() // Refinement: use the directive directly (frontend pre-formats)
         : `请优化以下 prompt（目标 AI：${targetAI}，语气风格：${tone}）：\n\n${prompt.trim()}`;
 
-      // 组装完整消息数组：system + 历史 + 当前
+      // Assemble full message array: system + history + current
       const allMessages = [
         { role: "system", content: SYSTEM_PROMPT },
         ...validHistory,
         { role: "user", content: userMessage },
       ];
 
-      // 调用 MiniMax API
+      // Call MiniMax API
       const minimaxPayload = {
         model: MODEL,
         messages: allMessages,
@@ -1976,14 +1976,14 @@ Now translate the user's prompt to this target platform's optimal style. Output 
         );
       }
 
-      // 清理并解析
+      // Clean and parse
       const cleaned = cleanModelOutput(rawContent);
 
       let result;
       try {
         result = JSON.parse(cleaned);
       } catch {
-        // JSON 解析失败，把整个清理后的内容作为优化结果
+        // JSON parse failed; treat the cleaned content as the optimized result
         result = {
           diagnosis: lang === "zh" ? "已优化" : "Optimized",
           optimized: cleaned,
@@ -2026,9 +2026,9 @@ Now translate the user's prompt to this target platform's optimal style. Output 
     }
   },
 
-  // ─── v20: Cron handler — 每周一 01:00 UTC (北京 09:00) 给所有订阅用户发洞察邮件 ─
-  // wrangler.toml 必须有: [triggers] crons = ["0 1 * * 1"]
-  // 必须配 SUPABASE_SERVICE_ROLE_KEY secret (cron 用,绕 RLS 拿订阅列表)
+  // ─── v20: Cron handler — Mondays 01:00 UTC (09:00 Beijing) email all subscribers ─
+  // wrangler.toml must contain: [triggers] crons = ["0 1 * * 1"]
+  // Requires SUPABASE_SERVICE_ROLE_KEY secret (cron uses it to bypass RLS for the recipient list)
   async scheduled(event, env, ctx) {
     console.log("[cron] weekly insights triggered at", new Date().toISOString());
 
@@ -2038,7 +2038,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
     }
 
     try {
-      // 1. 用 service_role 拿所有订阅了 weekly insights 的用户
+      // 1. Fetch all weekly-insights subscribers via service_role
       const recipientsRes = await fetch(
         `${env.SUPABASE_URL}/rest/v1/weekly_insights_recipients?select=user_id,email,last_insights_sent_at`,
         {
@@ -2060,8 +2060,8 @@ Now translate the user's prompt to this target platform's optimal style. Output 
 
       for (const r of recipients) {
         try {
-          // 2. 用 service_role 当 authToken 拿数据 (注意:这绕过 RLS,所以是 admin 视角)
-          // 但 generateInsightsForUser 是按 user_id 严格过滤,不会泄漏其他用户数据
+          // 2. Use service_role as authToken to fetch data (bypasses RLS — admin view)
+          // generateInsightsForUser strictly filters by user_id, so no cross-user leakage
           const insights = await generateInsightsForUser(env, r.user_id, r.email, env.SUPABASE_SERVICE_ROLE_KEY, r.unsub_token);
           if (insights.error) {
             console.warn(`[cron] skip ${r.user_id}: ${insights.error}`);
@@ -2073,13 +2073,13 @@ Now translate the user's prompt to this target platform's optimal style. Output 
             failed++;
             continue;
           }
-          // 数据少的用户跳过 (不打扰 inactive 用户)
+          // Skip low-data users (don't bother inactive users)
           if ((insights.summary?.total || 0) < 3) {
             console.log(`[cron] skip ${r.user_id}: only ${insights.summary?.total || 0} prompts this week`);
             continue;
           }
 
-          // 3. 发邮件
+          // 3. Send email
           const emailRes = await fetch("https://api.resend.com/emails", {
             method: "POST",
             headers: {
@@ -2096,7 +2096,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
 
           if (emailRes.ok) {
             sent++;
-            // 4. 更新 last_insights_sent_at
+            // 4. Update last_insights_sent_at
             await fetch(`${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${r.user_id}`, {
               method: "PATCH",
               headers: {
@@ -2112,7 +2112,7 @@ Now translate the user's prompt to this target platform's optimal style. Output 
             console.warn(`[cron] email send failed for ${r.user_id}: ${emailRes.status}`);
           }
 
-          // 限速 — Resend free tier 10/sec,我们 1/sec 远低于上限
+          // Throttle — Resend free tier allows 10/sec; 1/sec is safely below limit
           await new Promise((res) => setTimeout(res, 1000));
         } catch (err) {
           failed++;

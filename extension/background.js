@@ -1,7 +1,7 @@
-// 点击插件图标时打开 Side Panel
+// Open Side Panel when the extension icon is clicked
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
 });
 
-// 设置 Side Panel 在所有页面可用
+// Make Side Panel available on all pages
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
