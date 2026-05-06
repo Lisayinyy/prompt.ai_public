@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>prompt.ai · Technical Architecture</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+    color: #1a1a2e;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page {
+    width: 210mm;
+    min-height: 297mm;
+    padding: 12mm 14mm;
+    background: #fff;
+  }
+  /* Header */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 2px solid #18181b;
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+  }
+  .brand { font-family: Georgia, serif; font-size: 22px; font-weight: 700; }
+  .brand .dot { color: #7c3aed; }
+  .header-meta { font-size: 10px; color: #71717a; text-align: right; line-height: 1.4; }
+  h1 {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: #18181b;
+  }
+  .tagline { font-size: 11px; color: #5d3eb8; font-style: italic; margin-bottom: 14px; }
+
+  /* Section */
+  .section { margin-bottom: 12px; }
+  .section-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #7c3aed;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+    border-left: 3px solid #7c3aed;
+    padding-left: 8px;
+  }
+
+  /* Architecture diagram */
+  .arch {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+    margin: 6px 0 10px;
+  }
+  .layer {
+    width: 100%;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 10.5px;
+    text-align: center;
+    border: 1.2px solid;
+  }
+  .layer-title {
+    font-weight: 700;
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+  .layer-detail { color: #52525b; font-size: 9.5px; line-height: 1.4; }
+  .arrow {
+    color: #a78bfa;
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  .layer-user     { border-color: #18181b; background: #18181b; color: #fff; }
+  .layer-user .layer-detail { color: #d4d4d8; }
+  .layer-frontend { border-color: #3b82f6; background: #eff6ff; }
+  .layer-edge     { border-color: #f59e0b; background: #fffbeb; }
+  .layer-ai-row   { display: flex; gap: 6px; width: 100%; }
+  .layer-ai       { flex: 1; border-color: #ec4899; background: #fdf2f8; }
+  .layer-data     { border-color: #10b981; background: #f0fdf4; }
+
+  /* 2-col content */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .panel {
+    background: #fafafa;
+    border: 1px solid #e4e4e7;
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .panel h3 {
+    font-size: 11px;
+    font-weight: 700;
+    color: #18181b;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .panel ul { list-style: none; }
+  .panel li {
+    font-size: 9.8px;
+    color: #3f3f46;
+    line-height: 1.55;
+    padding: 1px 0;
+  }
+  .panel li b { color: #18181b; font-weight: 600; }
+  .panel li .tag {
+    display: inline-block;
+    font-size: 8.5px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: #e0e7ff;
+    color: #4338ca;
+    margin-right: 4px;
+    font-weight: 600;
+  }
+
+  /* Stats footer */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 6px;
+    margin-top: 8px;
+    border-top: 1px solid #e4e4e7;
+    padding-top: 8px;
+  }
+  .stat {
+    text-align: center;
+    background: linear-gradient(135deg, #f4f4f6 0%, #fafafa 100%);
+    border-radius: 4px;
+    padding: 6px 4px;
+  }
+  .stat-num {
+    font-size: 17px;
+    font-weight: 700;
+    color: #5d3eb8;
+    font-family: Georgia, serif;
+  }
+  .stat-label {
+    font-size: 8.5px;
+    color: #71717a;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 1px;
+  }
+
+  /* Bottom signature */
+  .footer {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed #d4d4d8;
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: #71717a;
+  }
+  .footer a { color: #7c3aed; text-decoration: none; }
+
+  /* memory layers (L1→L8) */
+  .memory-layers {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .mlayer {
+    background: #faf7ff;
+    border: 1px solid #e0d3f9;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 9px;
+    line-height: 1.3;
+  }
+  .mlayer-name {
+    font-weight: 700;
+    color: #5d3eb8;
+    font-size: 9.5px;
+  }
+  .mlayer-desc { color: #6f6682; font-size: 8.5px; }
+
+  /* 5 LLM use cases */
+  .llm-uses {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .llm-use {
+    background: #fdf2f8;
+    border: 1px solid #f9a8d4;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 9px;
+    text-align: center;
+  }
+  .llm-use-emoji { font-size: 14px; line-height: 1; }
+  .llm-use-name {
+    font-weight: 700;
+    color: #be185d;
+    font-size: 9px;
+    margin-top: 1px;
+  }
+  .llm-use-detail { color: #831843; font-size: 8px; margin-top: 1px; line-height: 1.2; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="brand">prompt<span class="dot">.</span>ai</div>
+    <div class="header-meta">
+      Technical Architecture · v33<br>
+      github.com/Lisayinyy/prompt.ai_public
+    </div>
+  </div>
+
+  <h1>跨 22 个 AI 平台的「第二大脑」</h1>
+  <div class="tagline">Cross-platform AI memory + optimization layer · 8-week build · 5 modules · 30+ migrations</div>
+
+  <!-- Architecture diagram -->
+  <div class="section">
+    <div class="section-title">System Architecture</div>
+    <div class="arch">
+
+      <div class="layer layer-user">
+        <div class="layer-title">USER · 22 AI Platforms</div>
+        <div class="layer-detail">ChatGPT · Claude · Kimi · Gemini · DeepSeek · Doubao · Tongyi · Qwen · Perplexity · Grok · Copilot · ZAI · Genspark · ...</div>
+      </div>
+
+      <div class="arrow">▼</div>
+
+      <div class="layer layer-frontend">
+        <div class="layer-title">Chrome Extension (React + TypeScript + Vite)</div>
+        <div class="layer-detail">
+          <b>Sidebar</b> 5 tabs (Optimize / History / Projects / Memory / Settings) ·
+          <b>Content Script</b> 22-platform silent capture (input-clear pattern) ·
+          <b>Background Worker</b>
+        </div>
+      </div>
+
+      <div class="arrow">▼</div>
+
+      <div class="layer layer-edge">
+        <div class="layer-title">Cloudflare Workers · Edge Compute (0 cold start)</div>
+        <div class="layer-detail">
+          /optimize · /embed · /extract-facts · /synthesize-voice · /synthesize-project-brief ·
+          /generate-insights · /send-insights-email · /unsubscribe · weekly cron (Mon 09:00 BJT)<br>
+          <i>retry + exponential backoff · smart placement · CORS · JWT auth</i>
+        </div>
+      </div>
+
+      <div class="arrow">▼</div>
+
+      <div class="layer-ai-row">
+        <div class="layer layer-ai">
+          <div class="layer-title">🤖 MiniMax-M2.7</div>
+          <div class="layer-detail">5 use cases · 0.3 temp · output cleaning</div>
+        </div>
+        <div class="layer layer-ai">
+          <div class="layer-title">🧬 bge-m3 (Cloudflare AI)</div>
+          <div class="layer-detail">1024-dim embedding · multilingual</div>
+        </div>
+        <div class="layer layer-ai">
+          <div class="layer-title">📨 Resend</div>
+          <div class="layer-detail">Weekly insights HTML emails</div>
+        </div>
+      </div>
+
+      <div class="arrow">▼</div>
+
+      <div class="layer layer-data">
+        <div class="layer-title">Supabase · Postgres + pgvector + Row-Level Security</div>
+        <div class="layer-detail">
+          Tables: <b>prompts</b> · <b>user_facts</b> · <b>user_voice_profiles</b> · <b>projects</b> · <b>prompt_templates</b> · weekly_insights_recipients<br>
+          <i>SECURITY DEFINER RPCs · auth.uid() per-user isolation · IVFFLAT vector index (100 lists)</i>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 8-layer memory model -->
+  <div class="section">
+    <div class="section-title">8-Layer Memory Model — L1 → L8</div>
+    <div class="memory-layers">
+      <div class="mlayer"><span class="mlayer-name">L1</span> Persistence<div class="mlayer-desc">所有 prompt 入库</div></div>
+      <div class="mlayer"><span class="mlayer-name">L2</span> Examples + Scores<div class="mlayer-desc">质量评分作为 few-shot</div></div>
+      <div class="mlayer"><span class="mlayer-name">L3</span> Negative Samples<div class="mlayer-desc">用户 👎 反馈避免重蹈</div></div>
+      <div class="mlayer"><span class="mlayer-name">L4</span> Time Decay<div class="mlayer-desc">老 prompt 权重衰减</div></div>
+      <div class="mlayer"><span class="mlayer-name">L5</span> Profile Cache<div class="mlayer-desc">统计画像 (task/tone)</div></div>
+      <div class="mlayer"><span class="mlayer-name">L6</span> Semantic Retrieval<div class="mlayer-desc">pgvector 相似度召回</div></div>
+      <div class="mlayer"><span class="mlayer-name">L7</span> Fact Extraction<div class="mlayer-desc">LLM 抽结构化 facts</div></div>
+      <div class="mlayer"><span class="mlayer-name">L8</span> Voice Profile<div class="mlayer-desc">跨平台融合声音指纹</div></div>
+    </div>
+  </div>
+
+  <!-- 5 LLM use cases -->
+  <div class="section">
+    <div class="section-title">5 LLM Use Cases (MiniMax-M2.7)</div>
+    <div class="llm-uses">
+      <div class="llm-use">
+        <div class="llm-use-emoji">✨</div>
+        <div class="llm-use-name">Prompt Optimize</div>
+        <div class="llm-use-detail">模糊→专业 prompt</div>
+      </div>
+      <div class="llm-use">
+        <div class="llm-use-emoji">📌</div>
+        <div class="llm-use-name">Fact Extract</div>
+        <div class="llm-use-detail">prompts→偏好 JSON</div>
+      </div>
+      <div class="llm-use">
+        <div class="llm-use-emoji">🎙️</div>
+        <div class="llm-use-name">Voice Profile</div>
+        <div class="llm-use-detail">facts→声音指纹</div>
+      </div>
+      <div class="llm-use">
+        <div class="llm-use-emoji">📋</div>
+        <div class="llm-use-name">Project Brief</div>
+        <div class="llm-use-detail">prompts→项目摘要</div>
+      </div>
+      <div class="llm-use">
+        <div class="llm-use-emoji">🎯</div>
+        <div class="llm-use-name">Auto-Categorize</div>
+        <div class="llm-use-detail">prompt→项目语义匹配</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Two-column engineering details -->
+  <div class="two-col">
+    <div class="panel">
+      <h3>🔒 Security &amp; Privacy</h3>
+      <ul>
+        <li><span class="tag">RLS</span>所有表行级权限 + auth.uid() 校验</li>
+        <li><span class="tag">JWT</span>用户 token,worker 不持有 service_role</li>
+        <li><span class="tag">OAuth</span>chrome.identity.launchWebAuthFlow 隔离 popup</li>
+        <li><span class="tag">GDPR</span>一键导出 JSON + 永久删除账号</li>
+        <li><span class="tag">Toggle</span>silent capture 用户可关</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>⚡ Stability &amp; Scale</h3>
+      <ul>
+        <li><span class="tag">Edge</span>Cloudflare Workers 0 冷启动</li>
+        <li><span class="tag">Retry</span>MiniMax 调用指数退避</li>
+        <li><span class="tag">Async</span>Promise.allSettled 抗网络抖动</li>
+        <li><span class="tag">Dedup</span>silent capture 5s 哈希去重</li>
+        <li><span class="tag">Concurrent</span>项目 brief 后台 max 2 并发</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat"><div class="stat-num">22</div><div class="stat-label">Platforms</div></div>
+    <div class="stat"><div class="stat-num">8</div><div class="stat-label">Memory Layers</div></div>
+    <div class="stat"><div class="stat-num">5</div><div class="stat-label">LLM Use Cases</div></div>
+    <div class="stat"><div class="stat-num">30+</div><div class="stat-label">SQL Migrations</div></div>
+    <div class="stat"><div class="stat-num">1024</div><div class="stat-label">Embed Dim</div></div>
+    <div class="stat"><div class="stat-num">8w</div><div class="stat-label">Build Time</div></div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <span>© 2026 prompt.ai · 你 AI 工作的第二大脑</span>
+    <span><a href="https://github.com/Lisayinyy/prompt.ai_public">github.com/Lisayinyy/prompt.ai_public</a></span>
+  </div>
+
+</div>
+</body>
+</html>
