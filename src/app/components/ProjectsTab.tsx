@@ -340,7 +340,11 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
     return (
       <div className="px-5 py-12 text-center">
         <div className="text-4xl mb-3">📁</div>
-        <p className="text-sm text-zinc-500">登录后用项目组织你的 AI 工作流</p>
+        <p className="text-sm text-zinc-500">
+          {lang === "zh"
+            ? "登录后用项目组织你的 AI 工作流"
+            : "Sign in to organize your AI workflows by project"}
+        </p>
       </div>
     );
   }
