@@ -657,7 +657,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                   </div>
                 </div>
               </div>
-            </motion.button>
+            </motion.div>
           ))}
         </div>
       )}
