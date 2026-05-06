@@ -1499,7 +1499,7 @@ export default function Sidebar() {
     setTimeout(() => setIsNewTopic(false), 1500);
   };
 
-  const API_URL = "https://api.prompt-ai.work";
+  const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
 
   // ─── 通过 Cloudflare Worker 调用 AI 服务（key 在 Worker secret，不在前端）───
   function buildSystemPrompt(targetAI = "any", tone = "Professional", round = 1) {
@@ -4479,7 +4479,7 @@ export default function Sidebar() {
                         const timeSavedStr = mins < 60 ? (lang === "zh" ? `${mins} 分钟` : `${mins} min`) : (lang === "zh" ? `${(mins/60).toFixed(1).replace(/\.0$/,"")} 小时` : `${(mins/60).toFixed(1).replace(/\.0$/,"")}h`);
                         const recentPrompts = realHistory.slice(0, 5).map(r => r.original_text.slice(0, 60) + (r.original_text.length > 60 ? "..." : ""));
 
-                        await fetch("https://prompt-optimizer-api.prompt-optimizer.workers.dev/send-report", {
+                        await fetch(`${API_URL}/send-report`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({

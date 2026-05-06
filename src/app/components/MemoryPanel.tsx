@@ -91,6 +91,8 @@ interface MemoryPanelProps {
 }
 
 export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanelProps) {
+  // v32-H / v33: worker base URL — 跟 Sidebar / ProjectsTab 保持一致
+  const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [voiceProfile, setVoiceProfile] = useState<string | null>(null);
@@ -377,7 +379,8 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
     try {
       // 5 路并行: voice / facts / extraction state / source breakdown / platform breakdown
       // v33-α: +2 路 — top projects + top templates
-      const [voiceRes, factsRes, stateRes, sourceRes, platformRes, projectsRes, templatesRes] = await Promise.all([
+      // v34: 用 allSettled, 任意一路失败不再让整个 dashboard 卡死
+      const settled = await Promise.allSettled([
         supabase.rpc("get_user_voice_profile", { p_user_id: user.id }),
         supabase
           .from("user_facts")
@@ -393,6 +396,11 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
         supabase.rpc("list_user_projects", { p_user_id: user.id }),
         supabase.rpc("list_user_templates", { p_user_id: user.id }),
       ]);
+      const pickData = (idx: number) => settled[idx].status === "fulfilled"
+        ? (settled[idx] as PromiseFulfilledResult<any>).value
+        : { data: null, error: (settled[idx] as PromiseRejectedResult).reason };
+      const [voiceRes, factsRes, stateRes, sourceRes, platformRes, projectsRes, templatesRes] =
+        [0, 1, 2, 3, 4, 5, 6].map(pickData);
 
       const v = (voiceRes.data as any)?.voice_profile;
       setVoiceProfile(typeof v === "string" && v.trim() ? v : null);
