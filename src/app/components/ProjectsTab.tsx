@@ -68,11 +68,20 @@ const COLOR_PALETTE = [
   "#ec4899", // 粉
 ];
 
-function formatRelative(iso: string | null): string {
+function formatRelative(iso: string | null, lang: "zh" | "en" = "zh"): string {
   if (!iso) return "—";
   const d = new Date(iso);
   const diffMs = Date.now() - d.getTime();
   const mins = Math.floor(diffMs / 60000);
+  if (lang === "en") {
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return `${days}d ago`;
+    return d.toLocaleDateString("en-US");
+  }
   if (mins < 1) return "刚刚";
   if (mins < 60) return `${mins} 分钟前`;
   const hrs = Math.floor(mins / 60);
@@ -358,7 +367,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
           onClick={() => { setView("list"); setSelectedProject(null); setProjectPrompts([]); }}
           className="text-[12px] text-[#7c3aed] hover:underline mb-3 flex items-center gap-1"
         >
-          ← 返回项目列表
+          {lang === "zh" ? "← 返回项目列表" : "← Back to projects"}
         </button>
 
         <div
@@ -373,9 +382,9 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                 onClick={() => setDeleteId(selectedProject.id)}
                 className="inline-flex items-center text-[11px] px-2.5 py-1 rounded-md border border-white/40 bg-white/15 text-white hover:bg-red-500 hover:border-red-500 hover:text-white transition-all active:scale-[0.96]"
                 style={{ fontWeight: 500 }}
-                title="删除项目 (prompts 不会被删,只是从项目移出)"
+                title={lang === "zh" ? "删除项目 (prompts 不会被删,只是从项目移出)" : "Delete project (prompts will be unlinked, not deleted)"}
               >
-                删除
+                {lang === "zh" ? "删除" : "Delete"}
               </button>
             </div>
             {selectedProject.description && (
@@ -398,11 +407,11 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
         <section className="rounded-xl border border-[#e0d3f9] bg-gradient-to-br from-[#faf7ff] to-white p-3 mb-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-semibold text-zinc-900 flex items-center gap-1.5">
-              <span>📋</span><span>项目简报</span>
+              <span>📋</span><span>{lang === "zh" ? "项目简报" : "Project Brief"}</span>
             </h3>
             {briefGeneratedAt && (
               <span className="text-[10px] text-zinc-400">
-                {formatRelative(briefGeneratedAt)} 更新
+                {formatRelative(briefGeneratedAt, lang)} {lang === "zh" ? "更新" : "updated"}
               </span>
             )}
           </div>
@@ -418,7 +427,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                   onClick={handleCopyBrief}
                   className="text-[11px] h-7 px-3 bg-[#5d3eb8] hover:bg-[#7c3aed]"
                 >
-                  📋 复制简报到剪贴板
+                  {lang === "zh" ? "📋 复制简报到剪贴板" : "📋 Copy brief to clipboard"}
                 </Button>
                 <Button
                   variant="outline"
@@ -427,7 +436,9 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                   onClick={handleGenerateBrief}
                   className="text-[11px] h-7 px-3"
                 >
-                  {briefLoading ? "🪄 生成中..." : "🔄 重新生成"}
+                  {briefLoading
+                    ? (lang === "zh" ? "🪄 生成中..." : "🪄 Generating...")
+                    : (lang === "zh" ? "🔄 重新生成" : "🔄 Regenerate")}
                 </Button>
                 {briefToast && (
                   <span className={`text-[10.5px] ${briefToast.startsWith("✓") ? "text-green-600" : "text-amber-600"}`}>
@@ -439,7 +450,9 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
           ) : (
             <>
               <p className="text-[11.5px] text-zinc-500 leading-relaxed mb-2">
-                让 AI 自动总结这个项目的主题、你的风格偏好、常用术语 — 切到新 AI 工具时一键复制粘贴,新 AI 立刻 onboard。
+                {lang === "zh"
+                  ? "让 AI 自动总结这个项目的主题、你的风格偏好、常用术语 — 切到新 AI 工具时一键复制粘贴,新 AI 立刻 onboard。"
+                  : "Let AI summarize this project's theme, your style preferences, and common terms — paste once to onboard any new AI tool instantly."}
               </p>
               <Button
                 variant="default"
@@ -449,10 +462,12 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                 className="text-[11px] h-7 px-3 bg-[#5d3eb8] hover:bg-[#7c3aed]"
               >
                 {briefLoading
-                  ? "🪄 生成中..."
+                  ? (lang === "zh" ? "🪄 生成中..." : "🪄 Generating...")
                   : projectPrompts.length === 0
-                  ? "🚫 项目还没 prompt 可总结"
-                  : `🪄 生成项目简报 (基于 ${Math.min(projectPrompts.length, 20)} 条 prompt)`}
+                  ? (lang === "zh" ? "🚫 项目还没 prompt 可总结" : "🚫 No prompts to summarize yet")
+                  : (lang === "zh"
+                      ? `🪄 生成项目简报 (基于 ${Math.min(projectPrompts.length, 20)} 条 prompt)`
+                      : `🪄 Generate brief (from ${Math.min(projectPrompts.length, 20)} prompts)`)}
               </Button>
               {briefToast && (
                 <span className={`text-[10.5px] ml-2 ${briefToast.startsWith("✓") ? "text-green-600" : "text-amber-600"}`}>
@@ -465,15 +480,18 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
 
         {/* Prompts 时间线 */}
         <h3 className="text-[11px] font-semibold text-zinc-600 uppercase tracking-wide mb-2">
-          📅 prompts 时间线
+          {lang === "zh" ? "📅 prompts 时间线" : "📅 Prompts Timeline"}
         </h3>
 
         {loading ? (
-          <div className="text-center py-8 text-xs text-zinc-400">加载中...</div>
+          <div className="text-center py-8 text-xs text-zinc-400">{lang === "zh" ? "加载中..." : "Loading..."}</div>
         ) : projectPrompts.length === 0 ? (
           <div className="rounded-lg border border-dashed border-zinc-200 px-3 py-6 text-xs text-zinc-400 text-center">
-            项目还没有 prompts<br />
-            优化时点 "加入项目" 或在历史里把已有 prompt 移入
+            {lang === "zh" ? (
+              <>项目还没有 prompts<br />优化时点 &quot;加入项目&quot; 或在历史里把已有 prompt 移入</>
+            ) : (
+              <>No prompts in this project yet<br />Click &quot;Add to project&quot; while optimizing, or move existing prompts from History</>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -489,7 +507,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                   <span>·</span>
                   <span>{p.task_type || "general"}</span>
                   <span>·</span>
-                  <span>{formatRelative(p.created_at)}</span>
+                  <span>{formatRelative(p.created_at, lang)}</span>
                   {p.source === "silent_capture" && (
                     <span className="ml-auto text-[10px] bg-[#faf7ff] text-[#7c3aed] px-1.5 rounded border border-[#e0d3f9]">📡</span>
                   )}
@@ -513,9 +531,9 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                         onSendToTab(text);
                       }}
                       className="text-[10.5px] text-white bg-[#18181b] hover:bg-[#2a2a30] px-2 py-0.5 rounded transition-colors"
-                      title="发到当前 AI 网页输入框"
+                      title={lang === "zh" ? "发到当前 AI 网页输入框" : "Send to current AI tab"}
                     >
-                      ↗ 发送到当前 AI
+                      {lang === "zh" ? "↗ 发送到当前 AI" : "↗ Send to current AI"}
                     </button>
                   </div>
                 )}
@@ -528,17 +546,29 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
         <Dialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
           <DialogContent className="max-w-[360px]">
             <DialogHeader>
-              <DialogTitle>删除项目</DialogTitle>
+              <DialogTitle>{lang === "zh" ? "删除项目" : "Delete Project"}</DialogTitle>
               <DialogDescription>
-                确认删除项目「{(projects.find(p => p.id === deleteId)?.name) || selectedProject?.name || "该项目"}」?
-                <span className="block mt-2 text-zinc-600 text-xs">
-                  ✓ 项目内的 prompts 不会被删除,只会从此项目移出 (变成"未归类")<br />
-                  ✗ 项目本身永久删除
-                </span>
+                {lang === "zh" ? (
+                  <>
+                    确认删除项目「{(projects.find(p => p.id === deleteId)?.name) || selectedProject?.name || "该项目"}」?
+                    <span className="block mt-2 text-zinc-600 text-xs">
+                      ✓ 项目内的 prompts 不会被删除,只会从此项目移出 (变成&quot;未归类&quot;)<br />
+                      ✗ 项目本身永久删除
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    Delete project &quot;{(projects.find(p => p.id === deleteId)?.name) || selectedProject?.name || "this project"}&quot;?
+                    <span className="block mt-2 text-zinc-600 text-xs">
+                      ✓ Prompts in this project will NOT be deleted, just unlinked (become &quot;Unsorted&quot;)<br />
+                      ✗ The project itself is permanently deleted
+                    </span>
+                  </>
+                )}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button variant="outline" size="sm" onClick={() => setDeleteId(null)} disabled={deleting}>取消</Button>
+              <Button variant="outline" size="sm" onClick={() => setDeleteId(null)} disabled={deleting}>{lang === "zh" ? "取消" : "Cancel"}</Button>
               <Button
                 variant="default"
                 size="sm"
@@ -546,7 +576,9 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                 disabled={deleting}
                 className="bg-red-600 hover:bg-red-700"
               >
-                {deleting ? "删除中..." : "永久删除"}
+                {deleting
+                  ? (lang === "zh" ? "删除中..." : "Deleting...")
+                  : (lang === "zh" ? "永久删除" : "Delete permanently")}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -560,9 +592,11 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
     <div className="px-5 py-4">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h2 className="text-[15px] font-semibold text-zinc-900">📁 我的项目</h2>
+          <h2 className="text-[15px] font-semibold text-zinc-900">{lang === "zh" ? "📁 我的项目" : "📁 My Projects"}</h2>
           <p className="text-[11px] text-zinc-500 mt-0.5">
-            把 22 平台的 prompt 按项目组织,跨 AI 找回老对话
+            {lang === "zh"
+              ? "把 22 平台的 prompt 按项目组织,跨 AI 找回老对话"
+              : "Organize prompts across 22 AI platforms by project — find old conversations easily"}
           </p>
         </div>
         <Button
@@ -571,7 +605,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
           onClick={() => setShowNewModal(true)}
           className="text-xs h-8"
         >
-          + 新项目
+          {lang === "zh" ? "+ 新项目" : "+ New Project"}
         </Button>
       </div>
 
@@ -580,17 +614,22 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
       )}
 
       {loading ? (
-        <div className="text-center py-12 text-xs text-zinc-400">加载中...</div>
+        <div className="text-center py-12 text-xs text-zinc-400">{lang === "zh" ? "加载中..." : "Loading..."}</div>
       ) : projects.length === 0 ? (
         <div className="rounded-xl border border-dashed border-zinc-200 px-4 py-10 text-center">
           <div className="text-4xl mb-3">🎯</div>
-          <p className="text-sm text-zinc-700 mb-1 font-medium">还没有项目</p>
+          <p className="text-sm text-zinc-700 mb-1 font-medium">{lang === "zh" ? "还没有项目" : "No projects yet"}</p>
           <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
-            创建第一个项目（如「创业公司官网」/「用户调研」）<br />
-            把跨 AI 平台的相关 prompt 都归到一起
+            {lang === "zh" ? (
+              <>创建第一个项目（如「创业公司官网」/「用户调研」）<br />
+              把跨 AI 平台的相关 prompt 都归到一起</>
+            ) : (
+              <>Create your first project (e.g. &quot;Startup Website&quot; / &quot;User Research&quot;)<br />
+              Group related prompts across AI platforms together</>
+            )}
           </p>
           <Button variant="default" size="sm" onClick={() => setShowNewModal(true)} className="text-xs">
-            🚀 创建第一个项目
+            {lang === "zh" ? "🚀 创建第一个项目" : "🚀 Create your first project"}
           </Button>
         </div>
       ) : (
@@ -620,7 +659,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                           animate={{ rotate: 360 }}
                           transition={{ duration: 1.4, repeat: Infinity, ease: "linear" }}
                           className="text-[10px] text-[#5d3eb8]"
-                          title="正在生成项目简报..."
+                          title={lang === "zh" ? "正在生成项目简报..." : "Generating project brief..."}
                         >
                           🪄
                         </motion.span>
@@ -628,13 +667,13 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                       {briefStatus[p.id] === "ready" && (
                         <span
                           className="text-[10px] text-emerald-500"
-                          title="简报已就绪 — 点开秒开"
+                          title={lang === "zh" ? "简报已就绪 — 点开秒开" : "Brief ready — click to open instantly"}
                         >
                           ✨
                         </span>
                       )}
                       <span className="text-[10.5px] text-zinc-400 tabular-nums">
-                        {p.prompt_count} 条
+                        {p.prompt_count} {lang === "zh" ? "条" : "prompts"}
                       </span>
                     </div>
                   </div>
@@ -645,7 +684,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
                     {p.top_platforms && p.top_platforms.length > 0 && (
                       <span>📡 {p.top_platforms.slice(0, 3).map(plat => platformEmoji(plat)).join(" ")}</span>
                     )}
-                    <span className="ml-auto">{formatRelative(p.last_activity || p.updated_at)}</span>
+                    <span className="ml-auto">{formatRelative(p.last_activity || p.updated_at, lang)}</span>
                   </div>
                 </div>
               </div>
@@ -658,33 +697,35 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
       <Dialog open={showNewModal} onOpenChange={setShowNewModal}>
         <DialogContent className="max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>📁 新建项目</DialogTitle>
+            <DialogTitle>{lang === "zh" ? "📁 新建项目" : "📁 New Project"}</DialogTitle>
             <DialogDescription>
-              给项目起个名字,后续可以把相关 prompt 归到这里
+              {lang === "zh"
+                ? "给项目起个名字,后续可以把相关 prompt 归到这里"
+                : "Name your project — you can group related prompts under it later"}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
             <div>
-              <label className="text-[11px] font-medium text-zinc-700 block mb-1">项目名称 *</label>
+              <label className="text-[11px] font-medium text-zinc-700 block mb-1">{lang === "zh" ? "项目名称 *" : "Project name *"}</label>
               <Input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="例如: 创业公司官网 / 用户调研报告"
+                placeholder={lang === "zh" ? "例如: 创业公司官网 / 用户调研报告" : "e.g. Startup Website / User Research Report"}
                 maxLength={100}
                 autoFocus
               />
             </div>
             <div>
-              <label className="text-[11px] font-medium text-zinc-700 block mb-1">描述（可选）</label>
+              <label className="text-[11px] font-medium text-zinc-700 block mb-1">{lang === "zh" ? "描述（可选）" : "Description (optional)"}</label>
               <Input
                 value={newDescription}
                 onChange={(e) => setNewDescription(e.target.value)}
-                placeholder="项目目标 / 关键背景..."
+                placeholder={lang === "zh" ? "项目目标 / 关键背景..." : "Project goal / key context..."}
                 maxLength={500}
               />
             </div>
             <div>
-              <label className="text-[11px] font-medium text-zinc-700 block mb-1.5">主题色</label>
+              <label className="text-[11px] font-medium text-zinc-700 block mb-1.5">{lang === "zh" ? "主题色" : "Color"}</label>
               <div className="flex gap-1.5">
                 {COLOR_PALETTE.map(c => (
                   <button
@@ -700,14 +741,16 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setShowNewModal(false)} disabled={creating}>取消</Button>
+            <Button variant="outline" size="sm" onClick={() => setShowNewModal(false)} disabled={creating}>{lang === "zh" ? "取消" : "Cancel"}</Button>
             <Button
               variant="default"
               size="sm"
               onClick={handleCreate}
               disabled={!newName.trim() || creating}
             >
-              {creating ? "创建中..." : "创建项目"}
+              {creating
+                ? (lang === "zh" ? "创建中..." : "Creating...")
+                : (lang === "zh" ? "创建项目" : "Create Project")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2824,6 +2824,7 @@ export default function Sidebar() {
                       onClose={() => setMemoryPanelOpen(false)}
                       user={user}
                       onForceExtract={() => maybeExtractFacts({ force: true })}
+                      lang={lang}
                     />
 
                     {/* v23: Onboarding 首次体验引导 (Dialog Portal,首次登录后自动弹一次) */}

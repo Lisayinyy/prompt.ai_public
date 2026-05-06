@@ -88,9 +88,10 @@ interface MemoryPanelProps {
   onClose: () => void;
   user: User | null;
   onForceExtract: () => Promise<void>;
+  lang?: "zh" | "en";
 }
 
-export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanelProps) {
+export function MemoryPanel({ open, onClose, user, onForceExtract, lang = "zh" }: MemoryPanelProps) {
   // v32-H / v33: worker base URL — 跟 Sidebar / ProjectsTab 保持一致
   const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
   const [loading, setLoading] = useState(false);
@@ -550,10 +551,10 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
         <DialogHeader className={`px-5 pt-5 pb-3 border-b border-zinc-100 ${shareMode ? "hidden" : ""}`}>
           <DialogTitle className="flex items-center gap-2 text-base">
             <span>🧠</span>
-            <span>我的 AI 记忆</span>
+            <span>{lang === "zh" ? "我的 AI 记忆" : "My AI Memory"}</span>
           </DialogTitle>
           <DialogDescription className="text-xs">
-            prompt.ai 在 22 个 AI 平台学到的你 — 跨平台、可控、属于你
+            prompt.ai {lang === "zh" ? "在 22 个 AI 平台学到的你 — 跨平台、可控、属于你" : "knows you across 22 AI platforms — cross-platform, transparent, owned by you"}
           </DialogDescription>
         </DialogHeader>
 
@@ -561,7 +562,7 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
         <div ref={shareCardRef} className="bg-white">
           {shareMode && (
             <div className="px-5 pt-5 pb-3 text-center bg-gradient-to-b from-[#faf7ff] to-white">
-              <div className="text-[11px] text-zinc-500 mb-1">我的 AI 记忆 · powered by</div>
+              <div className="text-[11px] text-zinc-500 mb-1">{lang === "zh" ? "我的 AI 记忆 · powered by" : "My AI Memory · powered by"}</div>
               <div className="font-bold text-lg" style={{ fontFamily: "Georgia, serif" }}>
                 prompt<span className="text-[#7c3aed]">.</span>ai
               </div>
@@ -570,10 +571,10 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
 
         {!user ? (
           <div className="py-12 text-center text-sm text-zinc-500 px-5">
-            请先登录查看你的 AI 记忆
+            {lang === "zh" ? "请先登录查看你的 AI 记忆" : "Sign in to view your AI memory"}
           </div>
         ) : loading ? (
-          <div className="py-16 text-center text-sm text-zinc-500 px-5">加载中...</div>
+          <div className="py-16 text-center text-sm text-zinc-500 px-5">{lang === "zh" ? "加载中..." : "Loading..."}</div>
         ) : (
           <div className="space-y-4 px-5 py-4">
             {errorMsg && (
@@ -599,10 +600,10 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               <div className="relative p-5 text-white">
                 <div className="flex items-center gap-2 mb-2 text-xs opacity-80">
                   <span>✨</span>
-                  <span>你的 AI 声音指纹</span>
+                  <span>{lang === "zh" ? "你的 AI 声音指纹" : "Your AI Voice Fingerprint"}</span>
                   {voiceUpdatedAt && (
                     <span className="ml-auto text-[10px] opacity-70">
-                      {formatTime(voiceUpdatedAt)} 更新
+                      {formatTime(voiceUpdatedAt)} {lang === "zh" ? "更新" : "updated"}
                     </span>
                   )}
                 </div>
@@ -612,7 +613,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 >
                   {voiceProfile ?? (
                     <span className="opacity-70 italic">
-                      还没生成声音指纹。多用几次 prompt.ai 自动学习,或点下方「重新生成」立即开始。
+                      {lang === "zh"
+                        ? "还没生成声音指纹。多用几次 prompt.ai 自动学习,或点下方「重新生成」立即开始。"
+                        : "No voice fingerprint yet. Use prompt.ai a few more times to auto-learn, or click \"Regenerate\" below to start now."}
                     </span>
                   )}
                 </p>
@@ -627,17 +630,17 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                   <div className="flex items-center gap-1.5">
                     <span className="opacity-70">📌</span>
                     <span className="font-semibold">{state?.facts_count ?? 0}</span>
-                    <span className="opacity-70">偏好</span>
+                    <span className="opacity-70">{lang === "zh" ? "偏好" : "facts"}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="opacity-70">📡</span>
                     <span className="font-semibold">{sourceBreakdown?.silent_capture ?? 0}</span>
-                    <span className="opacity-70">跨平台</span>
+                    <span className="opacity-70">{lang === "zh" ? "跨平台" : "captures"}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="opacity-70">🌍</span>
                     <span className="font-semibold">{platforms.length}</span>
-                    <span className="opacity-70">平台</span>
+                    <span className="opacity-70">{lang === "zh" ? "平台" : "platforms"}</span>
                   </div>
                 </div>
               </div>
@@ -651,13 +654,15 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
             >
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-semibold text-zinc-900 flex items-center gap-1.5">
-                  <span>🌍</span> <span>跨平台使用全景</span>
+                  <span>🌍</span> <span>{lang === "zh" ? "跨平台使用全景" : "Cross-Platform Usage"}</span>
                 </h3>
-                <span className="text-[10px] text-zinc-400">最近 90 天</span>
+                <span className="text-[10px] text-zinc-400">{lang === "zh" ? "最近 90 天" : "Last 90 days"}</span>
               </div>
               {platforms.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-zinc-200 px-3 py-4 text-xs text-zinc-400 text-center">
-                  还没有平台数据 — 在 ChatGPT/Claude/Kimi 等任一平台发条 prompt 试试
+                  {lang === "zh"
+                    ? "还没有平台数据 — 在 ChatGPT/Claude/Kimi 等任一平台发条 prompt 试试"
+                    : "No platform data yet — send a prompt on ChatGPT/Claude/Kimi or any AI platform"}
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -685,7 +690,7 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                             {display.name}
                           </span>
                           <span className="text-xs text-zinc-500 tabular-nums">
-                            {p.count} 条
+                            {p.count} {lang === "zh" ? "条" : ""}
                           </span>
                           <span
                             className="text-xs font-semibold tabular-nums w-12 text-right"
@@ -709,13 +714,15 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
             >
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-semibold text-zinc-900 flex items-center gap-1.5">
-                  <span>📌</span> <span>偏好画像</span>
+                  <span>📌</span> <span>{lang === "zh" ? "偏好画像" : "Preference Profile"}</span>
                   <span className="text-zinc-400 font-normal">({facts.length})</span>
                 </h3>
               </div>
               {facts.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-zinc-200 px-3 py-4 text-xs text-zinc-400 text-center">
-                  暂无偏好 — 累计 10 条 prompt 后系统会自动抽取
+                  {lang === "zh"
+                    ? "暂无偏好 — 累计 10 条 prompt 后系统会自动抽取"
+                    : "No facts yet — system auto-extracts after 10 prompts"}
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -751,8 +758,8 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                               <button
                                 onClick={() => handleDeleteFact(f.id)}
                                 className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-red-500 text-xs flex-shrink-0 px-1"
-                                aria-label="删除此偏好"
-                                title="删除此偏好"
+                                aria-label={lang === "zh" ? "删除此偏好" : "Delete this fact"}
+                                title={lang === "zh" ? "删除此偏好" : "Delete this fact"}
                               >
                                 ✕
                               </button>
@@ -779,9 +786,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                   <div className="rounded-lg border border-zinc-200 bg-white p-3">
                     <div className="flex items-center justify-between mb-2">
                       <h3 className="text-[12.5px] font-semibold text-zinc-900 flex items-center gap-1.5">
-                        <span>📁</span> <span>项目活跃度</span>
+                        <span>📁</span> <span>{lang === "zh" ? "项目活跃度" : "Active Projects"}</span>
                       </h3>
-                      <span className="text-[10px] text-zinc-400">最近活动</span>
+                      <span className="text-[10px] text-zinc-400">{lang === "zh" ? "最近活动" : "Recent activity"}</span>
                     </div>
                     <div className="space-y-1.5">
                       {topProjects.map((p, idx) => (
@@ -807,9 +814,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                   <div className="rounded-lg border border-zinc-200 bg-white p-3">
                     <div className="flex items-center justify-between mb-2">
                       <h3 className="text-[12.5px] font-semibold text-zinc-900 flex items-center gap-1.5">
-                        <span>📚</span> <span>模板 Top 5</span>
+                        <span>📚</span> <span>{lang === "zh" ? "模板 Top 5" : "Top 5 Templates"}</span>
                       </h3>
-                      <span className="text-[10px] text-zinc-400">按使用次数</span>
+                      <span className="text-[10px] text-zinc-400">{lang === "zh" ? "按使用次数" : "By usage count"}</span>
                     </div>
                     <div className="space-y-1.5">
                       {topTemplates.map((t, idx) => (
@@ -843,25 +850,25 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
               className={`rounded-lg border border-zinc-200 bg-zinc-50 p-3 space-y-2.5 ${shareMode ? "hidden" : ""}`}
             >
               <h3 className="text-sm font-semibold text-zinc-900 flex items-center gap-1.5">
-                <span>⚙️</span> <span>设置</span>
+                <span>⚙️</span> <span>{lang === "zh" ? "设置" : "Settings"}</span>
               </h3>
 
               {/* 跨平台监听 toggle */}
               <div className="flex items-start justify-between gap-3 rounded-md bg-white px-3 py-2 border border-zinc-200">
                 <div className="flex-1">
                   <div className="text-[13px] font-medium text-zinc-900 flex items-center gap-1.5">
-                    <span>📡</span> 跨平台监听
+                    <span>📡</span> {lang === "zh" ? "跨平台监听" : "Cross-Platform Capture"}
                   </div>
                   <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
                     {captureEnabled
-                      ? `已开启 · 在所有 AI 平台自动学习你的偏好`
-                      : "已关闭 · 仅 prompt.ai 主动优化的会被记录"}
+                      ? (lang === "zh" ? `已开启 · 在所有 AI 平台自动学习你的偏好` : "Enabled · auto-learning your preferences across all AI platforms")
+                      : (lang === "zh" ? "已关闭 · 仅 prompt.ai 主动优化的会被记录" : "Disabled · only ✨ Optimize actions are recorded")}
                   </p>
                 </div>
                 <Switch
                   checked={captureEnabled}
                   onCheckedChange={handleToggleCapture}
-                  aria-label="跨平台监听开关"
+                  aria-label={lang === "zh" ? "跨平台监听开关" : "Cross-platform capture toggle"}
                 />
               </div>
 
@@ -873,7 +880,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 onClick={handleForceRegenerate}
                 className="w-full text-xs h-8"
               >
-                {refreshing ? "🪄 生成中..." : "🪄 重新生成画像 (跳过 10 条阈值)"}
+                {refreshing
+                  ? (lang === "zh" ? "🪄 生成中..." : "🪄 Generating...")
+                  : (lang === "zh" ? "🪄 重新生成画像 (跳过 10 条阈值)" : "🪄 Regenerate Profile (skip 10-prompt threshold)")}
               </Button>
 
               {/* v20: AI Weekly Insights 订阅 */}
@@ -881,23 +890,23 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1">
                     <div className="text-[13px] font-medium text-zinc-900 flex items-center gap-1.5">
-                      <span>📨</span> 每周 AI 洞察邮件
+                      <span>📨</span> {lang === "zh" ? "每周 AI 洞察邮件" : "Weekly AI Insights Email"}
                     </div>
                     <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
                       {insightsEnabled
-                        ? `每周一早上发到 ${insightsEmail || "你的邮箱"}`
-                        : "订阅后每周一收到「你的 AI 使用画像」"}
+                        ? (lang === "zh" ? `每周一早上发到 ${insightsEmail || "你的邮箱"}` : `Every Monday morning to ${insightsEmail || "your email"}`)
+                        : (lang === "zh" ? "订阅后每周一收到「你的 AI 使用画像」" : "Subscribe to get \"Your AI Usage Profile\" every Monday")}
                     </p>
                     {insightsLastSent && (
                       <p className="text-[10px] text-zinc-400 mt-0.5">
-                        上次发送: {new Date(insightsLastSent).toLocaleDateString("zh-CN")}
+                        {lang === "zh" ? "上次发送" : "Last sent"}: {new Date(insightsLastSent).toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US")}
                       </p>
                     )}
                   </div>
                   <Switch
                     checked={insightsEnabled}
                     onCheckedChange={handleToggleInsights}
-                    aria-label="周报订阅开关"
+                    aria-label={lang === "zh" ? "周报订阅开关" : "Weekly insights toggle"}
                   />
                 </div>
                 <Button
@@ -907,7 +916,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                   onClick={handleSendInsightsNow}
                   className="w-full text-xs h-7 border-[#e0d3f9] hover:bg-[#faf7ff]"
                 >
-                  {sendingInsights ? "🚀 发送中..." : "🚀 立即发送一次预览到邮箱"}
+                  {sendingInsights
+                    ? (lang === "zh" ? "🚀 发送中..." : "🚀 Sending...")
+                    : (lang === "zh" ? "🚀 立即发送一次预览到邮箱" : "🚀 Send a preview to your email now")}
                 </Button>
                 {insightsToast && (
                   <div className={`text-[11px] text-center ${insightsToast.startsWith("✓") ? "text-green-600" : "text-red-500"}`}>
@@ -923,16 +934,18 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 onClick={() => setShareMode(true)}
                 className="w-full text-xs h-8 border-[#e0d3f9] hover:bg-[#faf7ff]"
               >
-                📸 进入截图分享模式
+                {lang === "zh" ? "📸 进入截图分享模式" : "📸 Enter share-card mode"}
               </Button>
 
               {/* v22: 数据管理 (导出 + 删除) */}
               <div className="rounded-md bg-white px-3 py-2 border border-zinc-200 space-y-2">
                 <div className="text-[13px] font-medium text-zinc-900 flex items-center gap-1.5">
-                  <span>🗂️</span> 数据管理
+                  <span>🗂️</span> {lang === "zh" ? "数据管理" : "Data Management"}
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-relaxed">
-                  你的数据完全属于你 — 可一键导出 / 永久删除
+                  {lang === "zh"
+                    ? "你的数据完全属于你 — 可一键导出 / 永久删除"
+                    : "Your data belongs to you — export anytime / delete permanently"}
                 </p>
                 <div className="flex items-center gap-2">
                   <Button
@@ -942,7 +955,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                     onClick={handleExportData}
                     className="flex-1 text-xs h-7"
                   >
-                    {exporting ? "📦 导出中..." : "📦 导出全部数据 (JSON)"}
+                    {exporting
+                      ? (lang === "zh" ? "📦 导出中..." : "📦 Exporting...")
+                      : (lang === "zh" ? "📦 导出全部数据 (JSON)" : "📦 Export All Data (JSON)")}
                   </Button>
                   <Button
                     variant="outline"
@@ -950,7 +965,7 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                     onClick={() => { setDeleteConfirmText(""); setDeleteConfirmOpen(true); }}
                     className="text-xs h-7 px-3 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
                   >
-                    🗑️ 删除账号
+                    {lang === "zh" ? "🗑️ 删除账号" : "🗑️ Delete Account"}
                   </Button>
                 </div>
                 {/* v33-η: 清除示例数据 */}
@@ -961,9 +976,11 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                     disabled={clearingDemo}
                     onClick={handleClearDemo}
                     className="flex-1 text-xs h-7 border-amber-200 text-amber-700 hover:bg-amber-50"
-                    title="只删 source='demo' 的 prompts + 名称以「示例」开头的项目/模板,不影响你自己的内容"
+                    title={lang === "zh" ? "只删 source='demo' 的 prompts + 名称以「示例」开头的项目/模板,不影响你自己的内容" : "Only deletes source='demo' prompts + projects/templates starting with \"示例\", your own data is untouched"}
                   >
-                    {clearingDemo ? "🗑️ 清除中..." : "🗑️ 清除示例数据"}
+                    {clearingDemo
+                      ? (lang === "zh" ? "🗑️ 清除中..." : "🗑️ Clearing...")
+                      : (lang === "zh" ? "🗑️ 清除示例数据" : "🗑️ Clear Demo Data")}
                   </Button>
                 </div>
                 {clearDemoToast && (
@@ -1136,7 +1153,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 disabled={downloadingPng || downloadingStoryPng}
                 className="flex-1 text-xs h-8"
               >
-                {downloadingPng ? "⏳ 生成中..." : "📥 横版"}
+                {downloadingPng
+                  ? (lang === "zh" ? "⏳ 生成中..." : "⏳ Generating...")
+                  : (lang === "zh" ? "📥 横版" : "📥 Landscape")}
               </Button>
               <Button
                 variant="default"
@@ -1145,7 +1164,9 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 disabled={downloadingPng || downloadingStoryPng}
                 className="flex-1 text-xs h-8 bg-[#5d3eb8] hover:bg-[#7c3aed]"
               >
-                {downloadingStoryPng ? "⏳ 生成中..." : "📱 9:16 故事图"}
+                {downloadingStoryPng
+                  ? (lang === "zh" ? "⏳ 生成中..." : "⏳ Generating...")
+                  : (lang === "zh" ? "📱 9:16 故事图" : "📱 9:16 Story")}
               </Button>
               <Button
                 variant="outline"
@@ -1153,12 +1174,12 @@ export function MemoryPanel({ open, onClose, user, onForceExtract }: MemoryPanel
                 onClick={() => setShareMode(false)}
                 className="text-xs h-8 px-3"
               >
-                ← 退出
+                {lang === "zh" ? "← 退出" : "← Exit"}
               </Button>
             </div>
           ) : (
             <Button variant="default" size="sm" onClick={onClose} className="w-full text-xs h-8">
-              关闭
+              {lang === "zh" ? "关闭" : "Close"}
             </Button>
           )}
         </div>
