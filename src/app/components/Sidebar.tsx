@@ -1705,11 +1705,26 @@ export default function Sidebar() {
     void round;
     const validHistory = messages.slice(-6).filter((m: any) => m.role && m.content);
 
-    const res = await fetch(`${API_URL}/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType, userDislikes, userFacts, userVoiceProfile }),
-    });
+    // v34: 加 30s timeout — 防 worker 不响应 / DNS 污染时 fetch 无限挂起
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    let res: Response;
+    try {
+      res = await fetch(`${API_URL}/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, targetAI, tone, lang, messages: validHistory, isRefinement, userProfile, topExamples, taskType, userDislikes, userFacts, userVoiceProfile }),
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err?.name === "AbortError") {
+        throw new Error(lang === "zh" ? "AI 服务响应超时(30 秒),请检查网络或稍后重试" : "AI service timed out (30s), check network and retry");
+      }
+      throw new Error(lang === "zh" ? "网络请求失败,请检查 VPN/网络连接" : "Network request failed, check VPN/connection");
+    }
+    clearTimeout(timeoutId);
 
     const data = await res.json().catch(() => ({}));
 
