@@ -93,7 +93,7 @@ interface MemoryPanelProps {
 
 export function MemoryPanel({ open, onClose, user, onForceExtract, lang = "zh" }: MemoryPanelProps) {
   // v32-H / v33: worker base URL — 跟 Sidebar / ProjectsTab 保持一致
-  const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
+  const API_URL = "https://api.prompt-ai.work";
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [voiceProfile, setVoiceProfile] = useState<string | null>(null);

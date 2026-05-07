@@ -26,3 +26,9 @@ crons = ["0 1 * * 1"]
 # Smart Placement: 让 Worker 在靠近 MiniMax API 的节点运行
 [placement]
 mode = "smart"
+
+# v34: bind to api.prompt-ai.work — workers.dev is DNS-poisoned in mainland China
+# Custom domain auto-creates DNS record + SSL via the Cloudflare-managed prompt-ai.work zone
+[[routes]]
+pattern = "api.prompt-ai.work"
+custom_domain = true

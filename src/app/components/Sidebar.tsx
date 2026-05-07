@@ -1499,7 +1499,7 @@ export default function Sidebar() {
     setTimeout(() => setIsNewTopic(false), 1500);
   };
 
-  const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
+  const API_URL = "https://api.prompt-ai.work";
 
   // ─── 通过 Cloudflare Worker 调用 AI 服务（key 在 Worker secret，不在前端）───
   function buildSystemPrompt(targetAI = "any", tone = "Professional", round = 1) {

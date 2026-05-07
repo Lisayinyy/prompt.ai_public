@@ -119,7 +119,7 @@ export function ProjectsTab({ user, lang, onSendToTab }: ProjectsTabProps) {
   // ready=brief 已存在; generating=后台生成中; missing=没 brief 但有 prompts; empty=无 prompts 不生成; unknown=未检查
   const [briefStatus, setBriefStatus] = useState<Record<string, "ready" | "generating" | "missing" | "empty" | "unknown">>({});
 
-  const API_URL = "https://prompt-optimizer-api.prompt-optimizer.workers.dev";
+  const API_URL = "https://api.prompt-ai.work";
 
   const loadProjects = useCallback(async () => {
     if (!user) return;
